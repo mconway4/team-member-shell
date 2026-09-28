@@ -412,8 +412,8 @@ function render() {
     <div class="app">
       <div class="proto-bar">
         <div>
-          <strong>Team Member order shell — usability refresh</strong>
-          <p>Same fields and order data. Redesigned for faster scanning and lower AHT: sticky identity, answer-first hero, clearer hierarchy, refund path that surfaces what’s actionable.</p>
+          <strong>Team Member order shell — Kosmos wash</strong>
+          <p>Tokens from Kosmos Design System (Kmart · Light): kmart-blue primary, surface greys, warning/info/error semantics, pill buttons, card radius. Same order data — visual system only. Font: Inter stand-in for AnkoModerat.</p>
         </div>
       </div>
       <div class="top">
