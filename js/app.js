@@ -19,7 +19,7 @@ import {
   loadDemoOrder,
   isSelectableDemoOrder,
   demoOrderIds,
-} from "./data.js?v=cnc-collect-by-1";
+} from "./data.js?v=recent-orders-1";
 import {
   assessJourney,
   assessSla,
@@ -30,7 +30,7 @@ import {
   mapShippitStatus,
   sortEventsByTimestamp,
   trackingNumbersForShipment,
-} from "./shippit.js?v=cnc-collect-by-1";
+} from "./shippit.js?v=recent-orders-1";
 
 /** Format AUD; null/undefined means amount unavailable (not zero). */
 const money = (n) =>
@@ -2607,17 +2607,49 @@ function customerContextUnavailableHtml(kind, label) {
   );
 }
 
+/**
+ * Recent-order fulfilment line — same CNC/HD vocabulary as Order Detail.
+ * Mixed methods join with · (not “+ Marketplace”, which is not a fulfilment method).
+ */
+function recentOrderFulfilmentHtml(kinds) {
+  const set = new Set(kinds || []);
+  const parts = [];
+  if (set.has("CNC")) {
+    parts.push(`
+      <span class="customer-order-fulfilment">
+        <span class="customer-order-fulfilment-icon" aria-hidden="true">${icons.store}</span>Click &amp; Collect
+      </span>`);
+  }
+  if (set.has("HD")) {
+    parts.push(`
+      <span class="customer-order-fulfilment">
+        <span class="customer-order-fulfilment-icon" aria-hidden="true">${icons.truck}</span>Home delivery
+      </span>`);
+  }
+  if (!parts.length) return "";
+  return parts.join(
+    `<span class="customer-order-fulfilment-sep" aria-hidden="true">·</span>`
+  );
+}
+
 function recentOrderCardHtml(row) {
   const isCurrent = row.id === order.id;
   const status = statusBadge(row.status);
   const eyebrow = isCurrent
     ? `<div class="customer-order-eyebrow">Current order</div>`
     : "";
+  const soldBy = row.soldBy || row.brandLine || "";
+  const fulfilment = recentOrderFulfilmentHtml(row.fulfilmentKinds);
   const body = `
     ${eyebrow}
     <div class="customer-order-date">${row.date}</div>
     <div class="customer-order-id">Order ${row.id}</div>
-    <div class="customer-order-brand">${row.brandLine}</div>
+    ${soldBy ? `<div class="customer-order-soldby">${soldBy}</div>` : ""}
+    ${
+      fulfilment
+        ? `<div class="customer-order-fulfilment-row">${fulfilment}</div>`
+        : ""
+    }
     <div class="customer-order-meta">
       <span class="customer-order-status">${status}</span>
       <span class="customer-order-end">

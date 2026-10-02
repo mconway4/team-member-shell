@@ -820,13 +820,16 @@ export const DEMO_DELAYED_SHIPMENT_ID = "kmart-ship-3";
 /**
  * Recent orders for the matched customer profile — looked up by profile email only.
  * Display name is recognition-only and must never be the search key.
+ * Card fields stay distinct: soldBy (sellers) vs fulfilmentKinds (CNC/HD) vs status.
+ * Status must match Order Detail for selectable demos.
  * `demoId` set when the shell can open that workspace.
  */
 export const customerRecentOrders = [
   {
     id: "452013509",
     date: "28 Sep 2026",
-    brandLine: "Kmart · Click & Collect",
+    soldBy: "Kmart",
+    fulfilmentKinds: ["CNC"],
     status: "Fulfilled",
     total: 550.0,
     demoId: null,
@@ -834,15 +837,17 @@ export const customerRecentOrders = [
   {
     id: DEMO_ORDER_HD,
     date: "21 Sep 2026",
-    brandLine: "Kmart + Target + Marketplace",
+    soldBy: "Kmart + Target + Marketplace",
+    fulfilmentKinds: ["HD"],
     status: "Partially shipped",
     total: 1032.88,
     demoId: DEMO_ORDER_HD,
   },
   {
     id: DEMO_ORDER_CNC_MP,
-    date: "19 Sep 2026",
-    brandLine: "Kmart · Click & Collect + Marketplace",
+    date: "27 Sep 2026",
+    soldBy: "Kmart + Marketplace",
+    fulfilmentKinds: ["CNC", "HD"],
     status: "Ready for collection",
     total: 66.0,
     demoId: DEMO_ORDER_CNC_MP,
@@ -850,7 +855,8 @@ export const customerRecentOrders = [
   {
     id: "451988201",
     date: "18 Sep 2026",
-    brandLine: "Kmart · Home delivery",
+    soldBy: "Kmart",
+    fulfilmentKinds: ["HD"],
     status: "Delivered",
     total: 89.0,
     demoId: null,
@@ -858,7 +864,8 @@ export const customerRecentOrders = [
   {
     id: "451920441",
     date: "4 Sep 2026",
-    brandLine: "Kmart · Home delivery",
+    soldBy: "Kmart",
+    fulfilmentKinds: ["HD"],
     status: "Delivered",
     total: 42.5,
     demoId: null,

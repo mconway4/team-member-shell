@@ -1151,11 +1151,47 @@ button.brand-tile:hover:not(.is-selected) {
   color: var(--text);
 }
 
-.customer-order-brand,
+.customer-order-soldby,
 .customer-case-order {
   margin-top: 2px;
   font-size: var(--km-fs-body-sm);
   color: var(--text-secondary);
+}
+
+.customer-order-fulfilment-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
+  margin-top: 3px;
+  font-size: var(--km-fs-body-sm);
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.customer-order-fulfilment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.customer-order-fulfilment-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.customer-order-fulfilment-icon svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.customer-order-fulfilment-sep {
+  color: var(--muted);
+  padding: 0 2px;
 }
 
 .customer-order-meta {
