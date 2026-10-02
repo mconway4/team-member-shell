@@ -12,6 +12,11 @@ const hdCustomer = {
   phone: "0466962766",
   /** Current membership — shown in Order information customer section. */
   onePassMember: true,
+  /**
+   * Profile association for customer-context drawers.
+   * matched | ambiguous | unmatched — never silently invent history.
+   */
+  profileMatch: "matched",
 };
 
 const hdOrder = {
@@ -655,8 +660,16 @@ const cncMpSellers = [
     status: "Ready for collection",
     itemCount: 3,
     merchandiseTotal: 17.0,
-    collectionStore: "1014",
-    shipFrom: "Kmart Store 1014",
+    /**
+     * Collection destination — customer-facing name is primary;
+     * store id is secondary operational metadata.
+     */
+    collectionStore: {
+      id: "1210",
+      name: "Kmart Chadstone",
+      address: "1341 Dandenong Rd, Chadstone VIC 3148",
+    },
+    shipFrom: "Kmart Chadstone Store 1210",
     shipToName: hdShipTo.name,
     shipToAddress: hdShipTo.address,
     shipments: [
@@ -664,7 +677,9 @@ const cncMpSellers = [
         id: "kmart-cnc-1",
         label: "Collection",
         releaseId: "4520148201",
-        store: "1014",
+        store: "1210",
+        storeName: "Kmart Chadstone",
+        storeAddress: "1341 Dandenong Rd, Chadstone VIC 3148",
         itemCount: 3,
         status: "Ready for collection",
         shippingMethod: "Click & Collect",
@@ -672,6 +687,8 @@ const cncMpSellers = [
         trackingNumber: null,
         shippedAt: null,
         readyAt: "2026-09-27T10:15:00+10:00",
+        /** Fulfilment-provided collection expiry — Guide displays countdown from this. */
+        collectBy: "2026-10-05T23:59:59+10:00",
         total: 17.0,
         packages: [
           {
@@ -799,6 +816,114 @@ export function isSelectableDemoOrder(id) {
 
 /** Demo focus: delayed + stale scans → Needs investigation (kmart-ship-3). */
 export const DEMO_DELAYED_SHIPMENT_ID = "kmart-ship-3";
+
+/**
+ * Recent orders for the matched customer profile — looked up by profile email only.
+ * Display name is recognition-only and must never be the search key.
+ * `demoId` set when the shell can open that workspace.
+ */
+export const customerRecentOrders = [
+  {
+    id: "452013509",
+    date: "28 Sep 2026",
+    brandLine: "Kmart · Click & Collect",
+    status: "Fulfilled",
+    total: 550.0,
+    demoId: null,
+  },
+  {
+    id: DEMO_ORDER_HD,
+    date: "21 Sep 2026",
+    brandLine: "Kmart + Target + Marketplace",
+    status: "Partially shipped",
+    total: 1032.88,
+    demoId: DEMO_ORDER_HD,
+  },
+  {
+    id: DEMO_ORDER_CNC_MP,
+    date: "19 Sep 2026",
+    brandLine: "Kmart · Click & Collect + Marketplace",
+    status: "Ready for collection",
+    total: 66.0,
+    demoId: DEMO_ORDER_CNC_MP,
+  },
+  {
+    id: "451988201",
+    date: "18 Sep 2026",
+    brandLine: "Kmart · Home delivery",
+    status: "Delivered",
+    total: 89.0,
+    demoId: null,
+  },
+  {
+    id: "451920441",
+    date: "4 Sep 2026",
+    brandLine: "Kmart · Home delivery",
+    status: "Delivered",
+    total: 42.5,
+    demoId: null,
+  },
+];
+
+/**
+ * Recent Care cases for the matched customer profile (email-keyed).
+ * Open cases may be linked as the active servicing case for Guide actions.
+ * Closed cases are context-only and not linkable.
+ */
+export const customerRecentCases = [
+  {
+    id: "123456",
+    state: "Open",
+    topic: "Delivery",
+    orderId: DEMO_ORDER_HD,
+    when: "Updated today",
+    opened: "Opened 29 Sep",
+    open: true,
+    linkable: true,
+  },
+  {
+    id: "123002",
+    state: "Open",
+    topic: "Missing item",
+    orderId: "451988201",
+    when: "Updated 2 days ago",
+    opened: "Opened 18 Sep",
+    open: true,
+    linkable: true,
+  },
+  {
+    id: "123012",
+    state: "Closed",
+    topic: "Missing item",
+    orderId: "451988201",
+    when: "Closed 20 Sep",
+    opened: "Opened 15 Sep",
+    open: false,
+    linkable: false,
+  },
+  {
+    id: "122841",
+    state: "Closed",
+    topic: "Refund",
+    orderId: null,
+    when: "Closed 12 Sep",
+    opened: "Opened 10 Sep",
+    open: false,
+    linkable: false,
+  },
+];
+
+export function findCaseById(caseId) {
+  return customerRecentCases.find((c) => c.id === String(caseId)) || null;
+}
+
+export function openCasesForOrder(orderId) {
+  return customerRecentCases.filter((c) => c.open && c.orderId === orderId);
+}
+
+export function linkableCases() {
+  return customerRecentCases.filter((c) => c.open && c.linkable !== false);
+}
 
 /**
  * Mock Order History results for a contact-based customer search.

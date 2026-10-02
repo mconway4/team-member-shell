@@ -576,6 +576,71 @@ button.brand-tile:hover:not(.is-selected) {
   line-height: 1.3;
 }
 
+.track-dest-place {
+  margin: 0;
+  font-size: var(--km-fs-body);
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.track-dest-mixed .track-dest-heading {
+  margin-bottom: 8px;
+}
+
+.track-dest-lane {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.track-dest-lane + .track-dest-lane {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.track-dest-lane-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--text-secondary);
+}
+
+.track-dest-lane-body {
+  min-width: 0;
+}
+
+.track-dest-lane-title {
+  margin: 0;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.track-dest-lane-meta {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.rail-fulfilment-block + .rail-fulfilment-block {
+  margin-top: 12px;
+}
+
+.rail-fulfilment-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+}
+
 .track-dest-promise {
   display: flex;
   flex-wrap: wrap;
@@ -620,13 +685,58 @@ button.brand-tile:hover:not(.is-selected) {
   padding: var(--km-space-lg) var(--km-space-xl);
 }
 
-.rail-card h2 {
+.rail-card h2,
+.rail-section-title {
   margin: 0 0 var(--km-space-md);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.rail-section-title-with-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/**
+ * Customer card — identity + verification tightly grouped; contact and history
+ * sit in clearer bands below.
+ */
+.rail-customer-identity {
+  margin: 0;
+}
+
+.rail-customer-identity .rail-preverify {
+  margin-top: 3px;
+}
+
+.rail-customer-contact {
+  margin-top: 8px;
+}
+
+.rail-customer-contact .rail-contact {
+  margin-top: 0;
+}
+
+.rail-customer-contact .rail-contact + .rail-contact {
+  margin-top: 4px;
+}
+
+.rail-customer-context {
+  margin-top: 12px;
+}
+
+.rail-customer-context .rail-context-links {
+  margin-top: 0;
+}
+
+.rail-customer-context .rail-profile-note {
+  margin-top: 0;
+  margin-bottom: 6px;
 }
 
 .rail-card-compact .rail-subhead {
@@ -742,6 +852,471 @@ button.brand-tile:hover:not(.is-selected) {
 
 .rail-address > p {
   margin: 0;
+}
+
+.rail-context-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 10px 0 0;
+}
+
+.rail-context-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--km-primary);
+  font: inherit;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.rail-context-link:hover {
+  text-decoration: underline;
+}
+
+.rail-context-sep {
+  color: var(--muted);
+  font-size: var(--km-fs-body-sm);
+}
+
+.rail-profile-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+/**
+ * Servicing case — where Guide records this interaction.
+ * Same card chrome as Customer / Order information; content carries the weight.
+ * Case number is the View navigation; bottom row is association management only.
+ */
+.rail-case-icon {
+  display: inline-flex;
+  color: var(--km-primary);
+  flex-shrink: 0;
+  vertical-align: -2px;
+}
+
+.rail-case-icon svg {
+  display: block;
+}
+
+.rail-case-card .rail-case-id,
+.rail-case-card .rail-case-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--km-fs-body);
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.rail-case-id-link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--km-primary);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: left;
+}
+
+.rail-case-id-link:hover,
+.rail-case-id-link:focus-visible {
+  text-decoration: underline;
+}
+
+.rail-case-card .rail-case-meta,
+.rail-case-card .rail-case-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.rail-case-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 8px 0 0;
+}
+
+.rail-case-actions .rail-context-link.is-quiet {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.rail-case-actions .rail-context-link.is-quiet:hover,
+.rail-case-actions .rail-context-link.is-quiet:focus-visible {
+  color: var(--text);
+}
+
+/**
+ * Customer-context drawer — right panel keeps Order Detail visible underneath.
+ * Gateway for recent orders / cases; not a permanent CRM strip on the page.
+ */
+.customer-drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+}
+
+.customer-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: color-mix(in srgb, var(--km-secondary, #1a1a1a) 28%, transparent);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.customer-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(400px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 32px color-mix(in srgb, var(--km-secondary, #1a1a1a) 12%, transparent);
+  pointer-events: auto;
+}
+
+.customer-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.customer-drawer-head h2 {
+  margin: 0;
+  font-size: var(--km-fs-body-lg);
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+/** Lookup identity — email is the search key; name above is recognition only. */
+.customer-drawer-identity {
+  margin: 4px 0 0;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.customer-drawer-empty {
+  padding: 8px 0 4px;
+}
+
+.customer-drawer-empty strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: var(--km-fs-body);
+  color: var(--text);
+}
+
+.customer-drawer-empty p {
+  margin: 0;
+  font-size: var(--km-fs-body-sm);
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.customer-drawer-close {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  margin: -4px -6px 0 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--km-radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.customer-drawer-close:hover,
+.customer-drawer-close:focus-visible {
+  color: var(--text);
+  background: var(--km-surface-background);
+  outline: none;
+}
+
+.customer-drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 14px 20px 20px;
+}
+
+.customer-drawer-foot {
+  padding: 12px 20px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.customer-drawer-count {
+  margin: 0 0 12px;
+  font-size: var(--km-fs-body-sm);
+  color: var(--text-secondary);
+}
+
+.customer-drawer-caution {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: var(--km-radius-sm);
+  background: color-mix(in srgb, var(--km-warning-bg) 55%, var(--surface));
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.customer-order-list,
+.customer-case-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.customer-order-card,
+.customer-case-card {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--km-radius-md);
+  background: var(--surface);
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.customer-order-card.is-nav,
+.customer-case-card:is(button) {
+  cursor: pointer;
+}
+
+.customer-order-card.is-nav:hover,
+.customer-case-card:is(button):hover {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--km-surface-background) 55%, var(--surface));
+}
+
+.customer-order-card.is-nav:hover .customer-order-chevron {
+  opacity: 1;
+  color: var(--km-primary);
+}
+
+/** Current order — recognition only; never a navigation target. */
+.customer-order-card.is-current {
+  cursor: default;
+  border-color: color-mix(in srgb, var(--km-primary) 35%, var(--border));
+  background: color-mix(in srgb, var(--km-primary-bg) 42%, var(--surface));
+}
+
+.customer-order-date,
+.customer-case-when {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.customer-order-id,
+.customer-case-id {
+  margin-top: 2px;
+  font-size: var(--km-fs-body);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.customer-order-brand,
+.customer-case-order {
+  margin-top: 2px;
+  font-size: var(--km-fs-body-sm);
+  color: var(--text-secondary);
+}
+
+.customer-order-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.customer-order-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.customer-order-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.customer-order-total {
+  font-weight: 700;
+  font-size: var(--km-fs-body);
+  color: var(--text);
+}
+
+.customer-order-chevron {
+  display: inline-flex;
+  color: var(--muted);
+  opacity: 0.55;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.customer-order-chevron svg {
+  display: block;
+}
+
+.customer-order-eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--km-primary);
+}
+
+.customer-case-state {
+  font-size: var(--km-fs-body-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.customer-case-card.is-open .customer-case-state {
+  color: var(--km-warning);
+}
+
+.customer-case-view {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 600;
+  color: var(--km-primary);
+}
+
+.customer-case-group {
+  margin-top: 14px;
+}
+
+.customer-case-group:first-child {
+  margin-top: 0;
+}
+
+.customer-case-group-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.customer-case-card.is-linked {
+  cursor: default;
+  border-color: color-mix(in srgb, var(--km-primary) 35%, var(--border));
+  background: color-mix(in srgb, var(--km-primary-bg) 42%, var(--surface));
+}
+
+.customer-case-card.is-linked:hover {
+  border-color: color-mix(in srgb, var(--km-primary) 35%, var(--border));
+  background: color-mix(in srgb, var(--km-primary-bg) 42%, var(--surface));
+}
+
+.customer-case-card.is-closed {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.customer-case-link-btn {
+  margin-top: 10px;
+}
+
+.customer-case-assoc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--km-primary) 18%, var(--border));
+}
+
+.customer-case-assoc-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--km-primary);
+  line-height: 1.3;
+}
+
+.customer-case-assoc-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+.customer-case-assoc-icon svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.customer-case-unlink {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.customer-case-unlink:hover,
+.customer-case-unlink:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.customer-case-closed-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* Prototype banner */
@@ -869,8 +1444,9 @@ button.brand-tile:hover:not(.is-selected) {
 
 .hero-title-heading {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 8px 10px;
   min-width: 0;
 }
 
@@ -880,6 +1456,11 @@ button.brand-tile:hover:not(.is-selected) {
 
 .hero-title-heading .copy-field {
   margin-top: 2px;
+}
+
+/** Order-level status — attached to the order entity, not the actions menu. */
+.hero-title-heading .badge-status-lg {
+  margin-top: 1px;
 }
 
 /**
@@ -995,7 +1576,87 @@ button.brand-tile:hover:not(.is-selected) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px; /* status badge ≠ Order actions — avoid segmented-control reading */
+  gap: 10px;
+  margin-left: auto;
+}
+
+.header-actions-cluster {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+/**
+ * Compact case-linkage cue beside Order actions — not a fulfilment badge.
+ * Neutral when unlinked; soft primary when linked.
+ */
+.header-case-cue {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 400;
+  color: var(--text-secondary);
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.header-case-cue-icon {
+  display: inline-flex;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.header-case-cue-icon svg {
+  display: block;
+}
+
+.header-case-cue-ref {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: inherit;
+  font-weight: 400;
+  line-height: inherit;
+}
+
+button.header-case-cue-ref {
+  cursor: pointer;
+}
+
+button.header-case-cue-ref:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.header-case-cue-sep {
+  color: var(--muted);
+}
+
+/** Only the management action is primary blue in the header cue. */
+.header-case-cue-link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--km-primary);
+  font: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.header-case-cue-link:hover {
+  text-decoration: underline;
 }
 
 .hero-main h1 {
@@ -1050,10 +1711,44 @@ button.brand-tile:hover:not(.is-selected) {
   font-weight: inherit;
 }
 
+/**
+ * AI 3-step pre-verification — quiet line under customer name.
+ * Whole label is hoverable (tooltip); no extra info icon.
+ */
+.rail-preverify {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  color: var(--km-positive);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.rail-preverify-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+.rail-preverify-icon svg {
+  display: block;
+  width: 11px;
+  height: 11px;
+}
+
+/** Supporting roll-up — quieter than the order status badge answer above. */
 .progress-line {
-  margin: 6px 0 0;
-  font-size: var(--km-fs-body-sm);
-  color: var(--text-secondary);
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 400;
+  color: var(--muted);
 }
 
 /* Kosmos badges */
@@ -1099,10 +1794,12 @@ button.brand-tile:hover:not(.is-selected) {
   color: var(--km-primary-on);
 }
 
+/** Order-level status — one step larger than shipment badges. */
 .badge-status-lg {
-  font-size: 12px;
-  padding: 4px 10px;
-  letter-spacing: 0.02em;
+  font-size: 13px;
+  line-height: 18px;
+  padding: 5px 12px;
+  letter-spacing: 0.01em;
 }
 
 .facts {
@@ -1313,7 +2010,7 @@ button.brand-tile:hover:not(.is-selected) {
   background: var(--border);
 }
 
-/** Peer card to Order summary / Refund history — clear page ending. */
+/** Utilitarian end-of-page actions — calm toolbar, not a giant CTA strip. */
 .order-actions-card {
   margin-top: var(--km-space-lg);
 }
@@ -1336,20 +2033,50 @@ button.brand-tile:hover:not(.is-selected) {
 .order-actions-btns-sep {
   width: 1px;
   align-self: stretch;
-  min-height: 28px;
-  margin: 0 4px;
+  min-height: 24px;
+  margin: 0 2px 0 4px;
   background: var(--border);
 }
 
-.order-actions-btns .btn.is-nav {
-  color: var(--km-primary);
-  border-color: color-mix(in srgb, var(--km-primary) 35%, var(--border));
+/** View shortcut — text link, not a primary outlined button. */
+.order-actions-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 6px 4px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-.order-actions-btns .btn.is-nav:hover {
+.order-actions-track:hover,
+.order-actions-track:focus-visible {
   color: var(--km-primary);
-  border-color: var(--km-primary);
-  background: var(--km-primary-bg);
+  text-decoration: underline;
+}
+
+.order-actions-track-icon {
+  display: inline-flex;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.order-actions-track-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.order-actions-btns .btn.btn-md {
+  min-height: 36px;
+  padding: 7px 14px;
 }
 
 .section-label {
@@ -1977,6 +2704,22 @@ th.num {
   font-weight: 600;
 }
 
+/** Accounting adjustment — neutral, not success green. */
+.totals-row.totals-refunded {
+  color: var(--text);
+}
+
+.totals-row.totals-refunded span:last-child {
+  font-weight: 600;
+}
+
+.totals-row.totals-original {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+}
+
 .totals-row.grand {
   margin-top: var(--km-space-md);
   padding-top: var(--km-space-lg);
@@ -2336,6 +3079,75 @@ th.num {
   letter-spacing: -0.01em;
 }
 
+.workflow-case-cue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
+  margin: 8px 0 0;
+  font-size: var(--km-fs-body-sm);
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.workflow-case-cue.is-linked {
+  color: var(--km-primary);
+}
+
+.workflow-case-cue-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--km-primary);
+}
+
+.workflow-case-cue-icon svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.workflow-case-cue-ref {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: help;
+}
+
+button.workflow-case-cue-ref {
+  color: var(--km-primary);
+  cursor: pointer;
+}
+
+button.workflow-case-cue-ref:hover,
+button.workflow-case-cue-ref:focus-visible {
+  text-decoration: underline;
+}
+
+.workflow-case-cue-sep {
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+.workflow-case-cue-action {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--km-primary);
+  font: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.workflow-case-cue-action:hover {
+  text-decoration: underline;
+}
+
 .workflow-lead {
   margin: 4px 0 0;
   font-size: var(--km-fs-body-sm);
@@ -2345,7 +3157,7 @@ th.num {
 .leave-confirm {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 90;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -2593,14 +3405,18 @@ th.num {
   text-align: right;
 }
 
-/** Compact local config — aligned under product name, not a full-width form strip. */
+/**
+ * Qty | Reason grid — same columns on every selected merchandise row
+ * so multi-line packages read as one vertical rhythm.
+ */
 .refund-item-config {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px 16px;
+  display: grid;
+  grid-template-columns: 80px minmax(220px, 300px);
+  align-items: end;
+  column-gap: 16px;
+  row-gap: 8px;
   margin-top: 6px;
-  max-width: 460px;
+  max-width: 396px;
 }
 
 .refund-item .item-meta-line {
@@ -2611,6 +3427,7 @@ th.num {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -2618,13 +3435,18 @@ th.num {
   color: var(--muted);
 }
 
+.refund-config-qty {
+  width: 80px;
+}
+
 .refund-config-reason {
-  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .select-compact {
   max-width: none;
-  width: auto;
+  width: 100%;
+  box-sizing: border-box;
   padding: 6px 8px;
   font-size: var(--km-fs-body-sm);
   font-weight: 500;
@@ -2637,10 +3459,22 @@ th.num {
   min-width: 80px;
 }
 
+/** Single eligible unit — same footprint as the qty select, no dropdown cue. */
+.select-qty.is-fixed {
+  appearance: none;
+  -webkit-appearance: none;
+  pointer-events: none;
+  cursor: default;
+  background: color-mix(in srgb, var(--km-surface-background) 55%, var(--surface));
+  background-image: none;
+  color: var(--text);
+  opacity: 1;
+  text-align: center;
+}
+
 .select-reason {
-  width: 300px;
-  max-width: 100%;
-  min-width: 220px;
+  width: 100%;
+  min-width: 0;
 }
 
 .shipment-block-refund.is-inert .refund-ship-title-row h3 {
@@ -2707,16 +3541,32 @@ th.num {
   font-size: var(--km-fs-body-sm);
 }
 
-.refund-ship-config {
+/**
+ * Shipping mirrors merchandise Qty | Reason:
+ * REFUND AMOUNT (fixed $ + editable) | REASON (same ~300px).
+ */
+.refund-item-config.refund-ship-config {
+  grid-template-columns: 132px minmax(220px, 300px);
+  max-width: 448px;
   margin-top: 8px;
+  align-items: start;
+}
+
+.refund-config-amount > span:first-child {
+  white-space: nowrap;
+}
+
+.refund-config-amount {
+  width: 132px;
 }
 
 .refund-amount-input-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 110px;
-  padding: 0 8px;
+  display: flex;
+  align-items: stretch;
+  width: 132px;
+  box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--km-radius-md);
   background: var(--surface);
@@ -2727,17 +3577,33 @@ th.num {
 }
 
 .refund-amount-prefix {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--km-surface-background) 55%, var(--surface));
   color: var(--text-secondary);
   font-size: var(--km-fs-body-sm);
   font-weight: 600;
+  line-height: 1;
 }
 
 .refund-amount-input {
-  width: 88px;
-  min-width: 72px;
-  border: none !important;
-  padding: 6px 0 !important;
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  padding: 6px 8px;
   background: transparent;
+  color: var(--text);
+  font-size: var(--km-fs-body-sm);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  box-sizing: border-box;
 }
 
 .refund-amount-input:focus {
@@ -3395,7 +4261,7 @@ a.btn {
   max-width: 52ch;
 }
 
-/* Unlabeled journey cue — relative progress only; heading is semantic truth */
+/* Unlabeled journey cue — relative progress; colour reinforces SLA, not status copy */
 .journey {
   margin: 10px 0 4px;
   max-width: 28rem;
@@ -3414,7 +4280,7 @@ a.btn {
   top: 0;
   bottom: 0;
   border-radius: 1px;
-  background: var(--km-primary);
+  background: var(--journey-tone, var(--km-primary));
   opacity: 0.55;
 }
 
@@ -3424,19 +4290,37 @@ a.btn {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--km-primary);
+  background: var(--journey-tone, var(--km-primary));
   border: 2px solid var(--surface);
-  box-shadow: 0 0 0 1px rgba(23, 104, 176, 0.35);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--journey-tone, var(--km-primary)) 35%, transparent);
   transform: translate(-50%, -50%);
   box-sizing: border-box;
 }
 
-.journey.is-neutral .journey-rail {
-  opacity: 0.85;
+.journey.is-on-track {
+  --journey-tone: var(--km-primary);
+}
+
+/** Outside expected window / needs investigation — supporting cue only. */
+.journey.is-delayed {
+  --journey-tone: var(--km-warning-container);
+}
+
+.journey.is-delayed .journey-fill {
+  opacity: 0.75;
+}
+
+/** Terminal success — Kosmos positive, one step quieter than the status badge. */
+.journey.is-delivered {
+  --journey-tone: var(--km-positive);
 }
 
 .journey.is-delivered .journey-fill {
   opacity: 0.7;
+}
+
+.journey.is-neutral .journey-rail {
+  opacity: 0.85;
 }
 
 .ship-carrier-actions {
@@ -3516,15 +4400,47 @@ a.btn {
   margin-top: 3px;
   font-size: var(--km-fs-body-sm);
   color: var(--text-secondary);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 4px;
+  line-height: 1.35;
 }
 
 .collection-context-meta strong {
   font-weight: 600;
   color: var(--text);
+}
+
+.collection-context-window {
+  margin-top: 6px;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.collection-context-window.is-ok {
+  color: var(--text);
+  font-weight: 400;
+}
+
+.collection-context-window.is-approaching,
+.collection-context-window.is-urgent {
+  color: var(--km-warning);
+  font-weight: 600;
+}
+
+.collection-context-window.is-ended {
+  color: var(--km-error);
+  font-weight: 600;
+}
+
+.ship-track-collection.is-approaching,
+.ship-track-collection.is-urgent {
+  border-color: color-mix(in srgb, var(--km-warning) 35%, var(--border));
+  background: color-mix(in srgb, var(--km-warning-bg) 45%, var(--surface));
+}
+
+.ship-track-collection.is-ended {
+  border-color: color-mix(in srgb, var(--km-error) 30%, var(--border));
+  background: color-mix(in srgb, var(--km-error-bg) 40%, var(--surface));
 }
 
 .btn-track-parcel {
@@ -3549,13 +4465,19 @@ a.btn {
 }
 
 .std-track-ref {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
+  width: fit-content;
+  max-width: 100%;
   margin-top: 8px;
   font-size: var(--km-fs-body-sm);
   color: var(--text-secondary);
   line-height: 1.25;
+}
+
+.std-track-ref .copy-field {
+  margin-top: 0;
 }
 
 .std-track-number {
@@ -3689,6 +4611,24 @@ a.btn {
   color: var(--km-warning);
 }
 
+/**
+ * SLA delay assessment — quieter than full warn / investigate.
+ * Orange progress already cues “running late”; this holds the facts + action.
+ */
+.track-callout-sla {
+  background: color-mix(in srgb, var(--km-warning-bg) 48%, var(--surface));
+  border-color: color-mix(in srgb, var(--km-warning-container) 16%, var(--border));
+}
+
+.track-callout-sla strong {
+  color: var(--text);
+}
+
+.track-callout-sla .track-callout-facts {
+  color: var(--text-secondary) !important;
+  font-weight: 400 !important;
+}
+
 /* Pathway prompt — actionable, not an alert */
 .track-callout-pathway {
   background: var(--km-primary-bg);
@@ -3768,6 +4708,7 @@ a.btn {
   background: var(--surface);
 }
 
+/** Latest carrier event — always primary; not tied to journey SLA tone. */
 .track-event.is-latest .track-event-dot {
   border-color: var(--km-primary);
   background: var(--km-primary);
@@ -3779,14 +4720,21 @@ a.btn {
   color: var(--text);
 }
 
+/** Copy sits beside the tracking number — never stretched to the row edge. */
 .track-event-tracking {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
+  width: fit-content;
+  max-width: 100%;
   margin-top: 2px;
   font-size: var(--km-fs-body-sm);
   color: var(--text-secondary);
   font-weight: 400;
+}
+
+.track-event-tracking .copy-field {
+  margin-top: 0;
 }
 
 .track-event-label {
