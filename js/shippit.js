@@ -161,10 +161,39 @@ const UNKNOWN = {
   kind: "unknown",
 };
 
+/** Carrier/Shippit event wording — distinct from Guide-normalised `label`. */
+const SHIPPIT_SOURCE_LABEL = {
+  processing: "Processing",
+  order_placed: "Order placed",
+  despatch_in_progress: "Despatch in progress",
+  ready_for_pickup: "Ready for pickup",
+  pickup_failed: "Pickup failed",
+  in_transit: "In transit",
+  with_driver: "Onboard for delivery",
+  delivery_attempted: "Delivery attempted",
+  delivery_failed: "Delivery failed",
+  insufficient_address: "Insufficient address",
+  awaiting_collection: "Awaiting collection",
+  await_collection: "Awaiting collection",
+  completed: "Completed",
+  parcel_completed: "Parcel completed",
+  partially_completed: "Partially completed",
+  lost: "Lost",
+  damaged: "Damaged",
+  returned_to_sender: "Returned to sender",
+  invalidated: "Invalidated",
+  cancelled: "Cancelled",
+  untrackable: "Untrackable",
+};
+
 export function mapShippitStatus(raw) {
   if (!raw) return null;
   const key = String(raw).trim().toLowerCase();
-  return SHIPPIT_STATUS_MAP[key] || { ...UNKNOWN, raw };
+  const mapped = SHIPPIT_STATUS_MAP[key] || { ...UNKNOWN, raw };
+  return {
+    ...mapped,
+    sourceLabel: mapped.sourceLabel || SHIPPIT_SOURCE_LABEL[key] || mapped.label,
+  };
 }
 
 /**

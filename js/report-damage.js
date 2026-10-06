@@ -51,6 +51,7 @@ export function bindReportDamage(ctx) {
     reviewCaseDestinationHtml,
     formatPhone,
     sellerRefundsInMirakl,
+    miraklHandoffSellerBlock,
   } = ctx;
 
   const customer = () => ctx.customer;
@@ -359,7 +360,9 @@ export function bindReportDamage(ctx) {
   function damageSellersHtml() {
     return sellers()
       .map((seller) => {
-        if (sellerRefundsInMirakl?.(seller)) return "";
+        if (sellerRefundsInMirakl?.(seller)) {
+          return miraklHandoffSellerBlock?.(seller) || "";
+        }
         const ships = seller.shipments
           .map((ship) => damageShipmentBlockHtml(ship, seller))
           .filter(Boolean)

@@ -9,6 +9,7 @@ import {
   shippitByTracking,
   carriers,
   refundHistory,
+  manhattanOrderNotes,
   orderSearchResults,
   customerRecentOrders,
   customerRecentCases,
@@ -19,7 +20,7 @@ import {
   loadDemoOrder,
   isSelectableDemoOrder,
   demoOrderIds,
-} from "./data.js?v=actions-case-dual";
+} from "./data.js?v=cancel-ship-div";
 import {
   assessJourney,
   assessSla,
@@ -30,11 +31,11 @@ import {
   mapShippitStatus,
   sortEventsByTimestamp,
   trackingNumbersForShipment,
-} from "./shippit.js?v=actions-case-dual";
+} from "./shippit.js?v=cancel-ship-div";
 import {
   bindReportDamage,
   emptyDamageState,
-} from "./report-damage.js?v=actions-case-dual";
+} from "./report-damage.js?v=cancel-ship-div";
 
 /** Format AUD; null/undefined means amount unavailable (not zero). */
 const money = (n) =>
@@ -49,6 +50,40 @@ const REFUND_REASONS = [
   "Wrong item",
   "Customer request",
 ];
+
+/** Guide cannot complete a refund above this amount without recorded approval. */
+const REFUND_APPROVAL_THRESHOLD = 500;
+const REFUND_APPROVAL_FORM_URL =
+  "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?id=A8qoy5WLjUSyWZikTREvfFmAtzJId6tIlwdY4z7UxodURU5HWllDU05RVE4wRk00Q0pRMjM5TklOMSQlQCN0PWcu";
+
+function refundRequiresApproval(amount) {
+  return Number(amount) > REFUND_APPROVAL_THRESHOLD;
+}
+
+function refundApprovalFormLinkHtml(className) {
+  return `<a
+    class="${className}"
+    href="${REFUND_APPROVAL_FORM_URL}"
+    target="_blank"
+    rel="noopener noreferrer"
+    title="Opens the refund approval request form"
+  >Submit approval request ↗</a>`;
+}
+
+function refundApprovalCueHtml(amount) {
+  if (!refundRequiresApproval(amount)) return "";
+  return `
+    <div class="refund-approval-cue" role="status">
+      <div class="refund-approval-head">
+        <p class="refund-approval-title">
+          <span class="refund-approval-icon" aria-hidden="true">${icons.attention}</span>
+          This refund requires approval
+        </p>
+        ${refundApprovalFormLinkHtml("refund-approval-form-link")}
+      </div>
+      <p class="refund-approval-detail">This ${money(amount)} refund exceeds the $${REFUND_APPROVAL_THRESHOLD} approval threshold.</p>
+    </div>`;
+}
 
 const CANCEL_REASONS = [
   "Customer requested cancellation",
@@ -131,12 +166,19 @@ const state = {
    */
   lastClosedCase: null,
   historyOpen: {}, // shipmentId → bool
+  manhattanNotesOpen: false,
+  manhattanNotesShowAll: false,
   sellerCollapsed: {}, // sellerId → bool when user has toggled
   shipmentOpen: {}, // shipmentId → bool when user has toggled
   searchTipDismissed: false,
   searchError: null, // { type: "nz-order", query } when NZ can be reliably detected
   historyFilter: "",
   actionsMenuOpen: false,
+  /**
+   * Refunds over $500 — intercept submit until the agent confirms approval.
+   * null | "ask" | "need-form"
+   */
+  refundApprovalPrompt: null,
   /** View to return to after Refund / Cancel / Create case (detail | track). */
   originView: "detail",
   /** Unsaved-leave prompt while in a task workflow. */
@@ -330,6 +372,7 @@ function resetRefundSelection() {
     shippingAmount: null,
     shippingAmountError: "",
   };
+  state.refundApprovalPrompt = null;
 }
 
 function shippingRemainingMax() {
@@ -829,6 +872,21 @@ function formatAuDate(input) {
   return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
+function formatManhattanNoteWhen(iso) {
+  const date = formatAuDate(iso);
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return date;
+  const time = new Date(t)
+    .toLocaleString("en-AU", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+    .replace(/\u202f/g, " ")
+    .replace(/\s?(am|pm)/i, (_, p) => ` ${p.toLowerCase()}`);
+  return `${date}, ${time}`;
+}
+
 /** Short Care date — 7 Oct; year only when not the prototype current year. */
 function formatAuDateShort(input) {
   const t = Date.parse(input);
@@ -1135,9 +1193,57 @@ function aggregatedItemsList(seller) {
     </div>`;
 }
 
-/** Guide cannot process Target / Marketplace refunds — hand off to Mirakl. */
+/** Target / Marketplace — seller contact and actions live in Mirakl, not Guide. */
+function sellerContactsInMirakl(seller) {
+  return seller?.kind === "target" || seller?.kind === "marketplace";
+}
+
 function sellerRefundsInMirakl(seller) {
-  return seller.kind === "target" || seller.kind === "marketplace";
+  return sellerContactsInMirakl(seller);
+}
+
+function sellerKindChipHtml(seller) {
+  return seller?.kind === "marketplace"
+    ? `<span class="seller-kind-chip">Marketplace</span>`
+    : "";
+}
+
+function sellerMiraklUrl(seller) {
+  if (seller?.miraklUrl) return seller.miraklUrl;
+  const ref = seller?.shipments?.[0]?.releaseId || order.id;
+  return `https://kmart.mirakl.net/mmp/operator/order/${encodeURIComponent(ref)}`;
+}
+
+function contactSellerActionHtml(seller) {
+  if (!sellerContactsInMirakl(seller)) return "";
+  const url = sellerMiraklUrl(seller);
+  return `<a
+    class="contact-seller-link"
+    href="${url}"
+    target="_blank"
+    rel="noopener noreferrer"
+    data-action="open-mirakl"
+    data-seller="${seller.id}"
+    data-channel="${seller.kind}"
+    title="Opens this seller in Mirakl"
+  >Contact seller ↗</a>`;
+}
+
+function contactSellerInlineHtml(seller) {
+  const link = contactSellerActionHtml(seller);
+  if (!link) return "";
+  return `<span class="seller-identity-sep" aria-hidden="true">·</span>${link}`;
+}
+
+function sellerIdentityHtml(seller, { headingTag = "div" } = {}) {
+  const Tag = headingTag === "h3" ? "h3" : "div";
+  const titleClass = Tag === "h3" ? "" : ` class="seller-title"`;
+  return `
+    <div class="seller-identity">
+      <${Tag}${titleClass}>${seller.name}</${Tag}>
+      ${sellerKindChipHtml(seller)}
+      ${contactSellerInlineHtml(seller)}
+    </div>`;
 }
 
 function refundMiraklProductRows(seller) {
@@ -1159,37 +1265,27 @@ function refundMiraklProductRows(seller) {
     .join("");
 }
 
-function refundMiraklSellerBlock(seller) {
-  const kindChip =
-    seller.kind === "marketplace"
-      ? `<span class="seller-kind-chip">Marketplace</span>`
-      : "";
-
+function miraklHandoffSellerBlock(seller) {
   return `
-    <section class="card seller-card seller-card-refund seller-card-handoff" aria-label="${seller.name} Mirakl refund">
+    <section class="card seller-card seller-card-refund seller-card-handoff" aria-label="${seller.name}">
       <div class="seller-head">
         <div class="seller-head-main">
           <div class="seller-title-row-inline">
-            <div class="seller-title">${seller.name}</div>
-            ${kindChip}
-            <button
-              type="button"
-              class="external-system-link"
-              data-action="open-mirakl"
-              data-seller="${seller.id}"
-              data-channel="${seller.kind}"
-            >Refund in Mirakl ↗</button>
+            ${sellerIdentityHtml(seller)}
           </div>
           <div class="seller-meta">${seller.itemCount} unit${seller.itemCount === 1 ? "" : "s"} · ${money(seller.merchandiseTotal)} · ${fulfilmentLabel(seller.delivery)}</div>
         </div>
       </div>
       <div class="seller-body">
-        <p class="refund-handoff-note">Refund these items in Mirakl.</p>
         <div class="refund-handoff-items" aria-disabled="true">
           ${refundMiraklProductRows(seller)}
         </div>
       </div>
     </section>`;
+}
+
+function refundMiraklSellerBlock(seller) {
+  return miraklHandoffSellerBlock(seller);
 }
 
 /** Inline copy for high-throughput Care clipboard values — not a global identity toolbar. */
@@ -1899,6 +1995,76 @@ function leaveConfirmDialog() {
     </div>`;
 }
 
+function completeRefundSubmit() {
+  const { amount, units, charges } = refundSelectionSummary();
+  if (!units && !charges) return false;
+  if (state.refund.shippingSelected && state.refund.shippingAmountError) {
+    showToast("Fix the shipping refund amount");
+    return false;
+  }
+  const caseRec = ensureServicingCase({ topic: "Refund" });
+  showToast(`Refund ${money(amount)} recorded on case #${caseRec.id} (prototype)`);
+  resetRefundSelection();
+  state.leaveConfirm = null;
+  state.refundApprovalPrompt = null;
+  state.view = state.originView || "detail";
+  render();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  return true;
+}
+
+function refundApprovalDialog() {
+  const step = state.refundApprovalPrompt;
+  if (!step) return "";
+  const { amount } = refundSelectionSummary();
+  if (step === "need-form") {
+    return `
+      <div class="leave-confirm" role="presentation">
+        <div
+          class="leave-confirm-card refund-approval-card"
+          role="alertdialog"
+          aria-labelledby="refund-approval-title"
+          aria-describedby="refund-approval-desc"
+        >
+          <h2 id="refund-approval-title">Submit an approval request</h2>
+          <p id="refund-approval-desc">
+            This refund of ${money(amount)} can't be processed until it's approved.
+            Request approval using the form, then return to complete the refund.
+          </p>
+          <p class="refund-approval-form-wrap">
+            <a
+              class="refund-approval-form-link"
+              href="${REFUND_APPROVAL_FORM_URL}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Open approval request form ↗</a>
+          </p>
+          <div class="leave-confirm-actions">
+            <button type="button" class="btn btn-secondary" data-action="refund-approval-close">Close</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="leave-confirm" role="presentation">
+      <div
+        class="leave-confirm-card refund-approval-card"
+        role="alertdialog"
+        aria-labelledby="refund-approval-title"
+        aria-describedby="refund-approval-desc"
+      >
+        <h2 id="refund-approval-title">Has this refund been approved?</h2>
+        <p id="refund-approval-desc">
+          Refunds over $500 require approval. This refund is ${money(amount)}.
+        </p>
+        <div class="leave-confirm-actions">
+          <button type="button" class="btn btn-secondary" data-action="refund-approval-no">No</button>
+          <button type="button" class="btn btn-primary" data-action="refund-approval-yes">Yes</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 /**
  * CFC / ACFS — Home Delivery cancellation blocked from these locations.
  * Confluence: Search Order Tool - Cancel Order Kmart AU.
@@ -1968,7 +2134,7 @@ function lineCancelEligibility(seller, ship, pkg, alloc) {
       fullOrder: false,
       lineItems: false,
       tier: "mirakl",
-      title: "Manage in Mirakl",
+      title: "Can't be cancelled in Guide",
       detail: "Marketplace items aren't managed in this cancellation.",
     };
   }
@@ -2350,9 +2516,9 @@ function cancelDisabledReason(entry, cap) {
       return "Ready for collection — can't cancel individually";
     }
     if (/pick|process|pack/.test(s)) {
-      return "Picking in progress — can't cancel individually";
+      return "Can't cancel individual items once picking has started";
     }
-    return "Can't cancel individually";
+    return "Can't cancel individual items";
   }
   return entry.title || "Can't be cancelled";
 }
@@ -2363,7 +2529,7 @@ function cancelLineIsSelectable(entry, cap, selectMode) {
   return (cap.lineItems.rows || []).some((r) => r.key === entry.key);
 }
 
-/** Shipment-header eligibility — reason for a fully ineligible shipment. */
+/** Shipment-header eligibility — only when every line is ineligible for the same reason. */
 function cancelShipmentEligibilityCue(entries, cap, selectMode) {
   if (!selectMode || !entries.length) return "";
   if (entries.some((e) => cancelLineIsSelectable(e, cap, selectMode))) {
@@ -2375,7 +2541,7 @@ function cancelShipmentEligibilityCue(entries, cap, selectMode) {
       entries.map((e) => cancelDisabledReason(e, cap)).filter(Boolean)
     ),
   ];
-  return reasons[0] || "";
+  return reasons.length === 1 ? reasons[0] : "";
 }
 
 /** Prefer cancel-matrix status over OMS ship status on the selector. */
@@ -2404,27 +2570,51 @@ function cancelSummaryItemHtml(row) {
     </div>`;
 }
 
-function cancelActionItemHtml(entry, cap, { selectMode }) {
+/** Same Marketplace read-only merchandise row (grey, no checkbox, no white card). */
+function cancelHandoffMerchandiseHtml(line, units, { reason = "" } = {}) {
+  if (!line) return "";
+  return `
+    <div class="refund-handoff-item">
+      <div class="item-cell">
+        ${productThumbHtml(line, { className: "thumb refund-handoff-thumb" })}
+        <div class="pkg-item-body">
+          <div class="item-name">${line.name} <span class="item-qty-inline">×${units}</span></div>
+          <div class="item-meta-line">SKU ${line.sku}</div>
+          ${reason ? `<p class="cancel-line-elig">${reason}</p>` : ""}
+        </div>
+      </div>
+      <div class="refund-item-amount">${money(line.price * units)}</div>
+    </div>`;
+}
+
+function cancelReadonlyItemHtml(entry, { reason = "" } = {}) {
+  return cancelHandoffMerchandiseHtml(entry.line, entry.units, { reason });
+}
+
+function cancelActionItemHtml(entry, cap, { selectMode, shipmentCue = "" }) {
   if (!entry.line) return "";
   if (!selectMode) return cancelSummaryItemHtml(entry);
 
   const selectable = cancelLineIsSelectable(entry, cap, selectMode);
-  const selectedQty = selectable ? Number(state.cancel.items[entry.key] || 0) : 0;
+  if (!selectable) {
+    const reason = shipmentCue ? "" : cancelDisabledReason(entry, cap);
+    return cancelReadonlyItemHtml(entry, { reason });
+  }
+
+  const selectedQty = Number(state.cancel.items[entry.key] || 0);
   const selected = selectedQty > 0;
 
   return `
-    <div class="refund-item cancel-action-item${!selectable ? " is-blocked" : ""}${selected ? " is-selected" : ""}">
+    <div class="refund-item cancel-action-item${selected ? " is-selected" : ""}">
       <div class="refund-item-main">
         <input
           class="checkbox"
           type="checkbox"
-          ${
-            selectable
-              ? `data-action="cancel-toggle-item" data-key="${entry.key}" data-max="${entry.units}"`
-              : "disabled"
-          }
+          data-action="cancel-toggle-item"
+          data-key="${entry.key}"
+          data-max="${entry.units}"
           ${selected ? "checked" : ""}
-          aria-label="${selectable ? "Select" : "Unavailable"} ${entry.line.name}"
+          aria-label="Select ${entry.line.name}"
         />
         <div class="item-cell">
           ${productThumbHtml(entry.line)}
@@ -2439,19 +2629,7 @@ function cancelActionItemHtml(entry, cap, { selectMode }) {
 
 function cancelMiraklSellerHtml(seller, rows) {
   const items = rows
-    .map((row) => {
-      if (!row.line) return "";
-      return `
-        <div class="refund-handoff-item">
-          <div class="item-cell">
-            ${productThumbHtml(row.line, { className: "thumb refund-handoff-thumb" })}
-            <div class="pkg-item-body">
-              <div class="item-name">${row.line.name} <span class="item-qty-inline">×${row.units}</span></div>
-            </div>
-          </div>
-          <div class="refund-item-amount">${money(row.line.price * row.units)}</div>
-        </div>`;
-    })
+    .map((row) => cancelHandoffMerchandiseHtml(row.line, row.units))
     .join("");
 
   return `
@@ -2459,9 +2637,7 @@ function cancelMiraklSellerHtml(seller, rows) {
       <div class="seller-head">
         <div class="seller-head-main">
           <div class="seller-title-row-inline">
-            <div class="seller-title">${seller.name}</div>
-            <span class="seller-kind-chip">Marketplace</span>
-            <button type="button" class="external-system-link" data-action="open-mirakl" data-seller="${seller.id}" data-channel="${seller.kind}">Manage in Mirakl ↗</button>
+            ${sellerIdentityHtml(seller)}
           </div>
           <div class="seller-meta">${cancelSellerMetaLine(seller, rows)}</div>
         </div>
@@ -2479,11 +2655,22 @@ function cancelShipmentBlockHtml(ship, seller, entries, cap, { selectMode }) {
   const eligCue = cancelShipmentEligibilityCue(entries, cap, selectMode);
   const statusLabel = cancelShipmentStatusLabel(ship, entries);
   const items = entries
-    .map((e) => cancelActionItemHtml(e, cap, { selectMode }))
+    .map((e) =>
+      cancelActionItemHtml(e, cap, { selectMode, shipmentCue: eligCue })
+    )
     .join("");
 
+  const readonlyShip = selectMode && !hasSelectable;
+  const itemsRegion = readonlyShip
+    ? `<div class="refund-handoff-items" aria-disabled="true">${items}</div>`
+    : selectMode
+      ? `<div class="cancel-select-items">${items}</div>`
+      : `<div class="package-group refund-pkg is-headerless">
+          <div class="package-items refund-pkg-items">${items}</div>
+        </div>`;
+
   return `
-    <div class="shipment-block shipment-block-refund shipment-block-cancel${!hasSelectable && selectMode ? " is-disabled-ship" : ""}">
+    <div class="shipment-block shipment-block-refund shipment-block-cancel${readonlyShip ? " is-disabled-ship" : ""}${selectMode && hasSelectable ? " is-select-ship" : ""}">
       <div class="refund-ship-head">
         <div class="refund-ship-title-row">
           <h3>${ship.label}</h3>
@@ -2495,17 +2682,15 @@ function cancelShipmentBlockHtml(ship, seller, entries, cap, { selectMode }) {
             : ""
         }
       </div>
-      <div class="refund-ship-body package-stack refund-pkg-stack">
-        <div class="package-group refund-pkg is-headerless">
-          <div class="package-items refund-pkg-items">${items}</div>
-        </div>
+      <div class="refund-ship-body${readonlyShip || selectMode ? "" : " package-stack refund-pkg-stack"}">
+        ${itemsRegion}
       </div>
     </div>`;
 }
 
 /**
  * Same seller → shipment → item shape as Refund / Damage.
- * selectMode: checkboxes for actionable lines; disabled muted rows for the rest.
+ * selectMode: checkboxes only on actionable lines; ineligible lines are read-only (no checkbox).
  */
 function cancelHierarchyHtml(cap, { selectMode = false, togetherNote = false } = {}) {
   return sellers
@@ -2534,7 +2719,9 @@ function cancelHierarchyHtml(cap, { selectMode = false, togetherNote = false } =
         <section class="card seller-card seller-card-refund seller-card-cancel">
           <div class="seller-head">
             <div class="seller-head-main">
-              <div class="seller-title">${seller.name}</div>
+              <div class="seller-title-row-inline">
+                ${sellerIdentityHtml(seller)}
+              </div>
               <div class="seller-meta">${cancelSellerMetaLine(seller, sellerRows)}</div>
             </div>
           </div>
@@ -2608,7 +2795,7 @@ function cancelNoneHtml(cap) {
   return `
     <section class="card card-pad cancel-panel cancel-entry-banner">
       <h2>Nothing can be cancelled</h2>
-      <p class="help">No items on this order are available for cancellation in Guide. Use refund or return where eligible, or manage Marketplace items in Mirakl.</p>
+      <p class="help">No items on this order are available for cancellation in Guide. Use refund or return where eligible, or contact the seller for Marketplace items.</p>
     </section>
     ${cancelHierarchyHtml(cap, { selectMode: false })}`;
 }
@@ -2701,7 +2888,7 @@ function cancelReviewExcludedHtml(cap) {
     .map((r) => {
       if (!r.line) return "";
       if (r.tier === "mirakl") {
-        return `<li>Marketplace · ${r.line.name} ×${r.units} — manage in Mirakl</li>`;
+        return `<li>Marketplace · ${r.line.name} ×${r.units} — contact seller</li>`;
       }
       const reason = cancelDisabledReason(r, cap);
       return `<li>${r.seller.name} · ${r.line.name} ×${r.units}${
@@ -3060,7 +3247,9 @@ function createCaseSpecificTreeHtml() {
       return `
         <section class="create-case-seller">
           <header class="create-case-seller-head">
-            <h3>${seller.name}</h3>
+            <div class="seller-title-row-inline">
+              ${sellerIdentityHtml(seller, { headingTag: "h3" })}
+            </div>
             <p>${createCaseSellerMetaHtml(seller)}</p>
           </header>
           <div class="create-case-seller-body">${ships}</div>
@@ -3527,37 +3716,6 @@ function orderActionsPanel() {
     </section>`;
 }
 
-/**
- * Order-level status distribution from Care-facing shipment statuses.
- * Only non-zero buckets; quantities should reconcile to order.items.
- */
-function orderProgress() {
-  const counts = new Map();
-  let accounted = 0;
-
-  for (const seller of sellers) {
-    for (const ship of seller.shipments) {
-      const units = shipmentUnitCount(ship);
-      if (!units) continue;
-      accounted += units;
-      const display = displayShipmentStatus(ship, seller, shippitByTracking);
-      const key = statusPhrase(display.label);
-      counts.set(key, (counts.get(key) || 0) + units);
-    }
-  }
-
-  const parts = [...counts.entries()]
-    .filter(([, n]) => n > 0)
-    .sort((a, b) => statusSortKey(a[0]) - statusSortKey(b[0]))
-    .map(([k, n]) => `${n} ${k}`);
-
-  if (accounted < order.items) {
-    parts.push(`${order.items - accounted} unallocated`);
-  }
-
-  return parts.join(" · ");
-}
-
 function totalRefundedAmount() {
   if (typeof order.totalRefunded === "number") return order.totalRefunded;
   return (refundHistory || []).reduce((s, r) => s + (r.amount || 0), 0);
@@ -3795,7 +3953,6 @@ function hero({ showActionsMenu = false } = {}) {
                 : ""
             }
           </p>
-          <p class="progress-line">${orderProgress()}</p>
         </div>
       </div>
       <div class="facts">
@@ -4825,6 +4982,39 @@ function serviceLabel(method) {
   return `${method} delivery`;
 }
 
+function kmartShipmentStoreId(ship) {
+  const id = String(ship?.store || "").trim();
+  if (!id || id === "MP") return "";
+  return id;
+}
+
+function kmartHdFulfilmentStoreIds(seller) {
+  const ids = [];
+  const seen = new Set();
+  for (const ship of seller.shipments || []) {
+    if (isClickCollectFulfilment(seller, ship)) continue;
+    const id = kmartShipmentStoreId(ship);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function kmartSellerHasCnc(seller) {
+  return (seller.shipments || []).some((ship) => isClickCollectFulfilment(seller, ship));
+}
+
+function firstCncShipment(seller) {
+  return (seller.shipments || []).find((ship) => isClickCollectFulfilment(seller, ship)) || null;
+}
+
+function formatHdStoreIds(ids) {
+  if (!ids.length) return "";
+  if (ids.length === 1) return `Store ${ids[0]}`;
+  return `Stores ${ids.join(", ")}`;
+}
+
 /** Detail view — ship-from / collection context · service. */
 function shipmentDetailMetaHtml(ship, seller) {
   const parts = [];
@@ -4836,8 +5026,8 @@ function shipmentDetailMetaHtml(ship, seller) {
 }
 
 /**
- * Track execution line — service · carrier.
- * CNC keeps collection store first; HD omits ship-from so the line stays execution-focused.
+ * Track execution line — service · Store ID (Kmart) · carrier when not shown in the body.
+ * CNC keeps collection store name + id; HD Store ID is per shipment, never assumed order-wide.
  */
 function shipmentTrackMetaHtml(ship, seller, { includeCarrier = true, carrierName = "" } = {}) {
   const parts = [];
@@ -4847,6 +5037,10 @@ function shipmentTrackMetaHtml(ship, seller, { includeCarrier = true, carrierNam
   }
   const service = serviceLabel(ship.shippingMethod);
   if (service) parts.push(`<span>${service}</span>`);
+  if (seller?.kind === "kmart" && !isClickCollectFulfilment(seller, ship)) {
+    const id = kmartShipmentStoreId(ship);
+    if (id) parts.push(`<span>Store ${id}</span>`);
+  }
   if (includeCarrier && carrierName) {
     parts.push(`<span>${carrierName}</span>`);
   }
@@ -4854,39 +5048,50 @@ function shipmentTrackMetaHtml(ship, seller, { includeCarrier = true, carrierNam
 }
 
 function storeMeta(ship, seller = null) {
+  if (seller && seller.kind !== "kmart") return "";
   if (ship.storeLabel) {
     return `<span class="ship-store">${icons.store} ${ship.storeLabel}</span>`;
   }
   if (ship.store === "MP") {
-    return `<span class="ship-store">${icons.store} Marketplace</span>`;
+    return "";
   }
   const store = resolveCollectionStore(seller, ship);
   if (store?.name || store?.id) {
     return `<span class="ship-store">${icons.store} ${collectionStoreCompactLabel(store)}</span>`;
   }
   if (ship.store) {
-    return `<a class="ship-store" href="#" onclick="return false">${icons.store} Store ${ship.store}</a>`;
+    return `<span class="ship-store">Store ${ship.store}</span>`;
   }
   return "";
 }
 
-/** HD store id for sold-by meta — first non-marketplace ship store, else shipFrom. */
-function sellerHdStoreId(seller) {
-  for (const ship of seller.shipments || []) {
-    if (ship.store && ship.store !== "MP") return String(ship.store);
-  }
-  const from = String(seller.shipFrom || "");
-  const m = from.match(/\b(\d{3,})\b/);
-  return m ? m[1] : "";
-}
+/**
+ * Order Detail Kmart group — unique fulfilment Store IDs.
+ * Mixed CNC + HD does not flatten collection and delivery stores into one list.
+ */
+function sellerStoreMetaBit(seller, { detailMode = true } = {}) {
+  if (seller.kind !== "kmart") return "";
+  const cnc = kmartSellerHasCnc(seller);
+  const hdIds = kmartHdFulfilmentStoreIds(seller);
 
-function sellerStoreMetaBit(seller) {
-  if (fulfilmentKind(seller.delivery) === "CNC") {
-    const store = resolveCollectionStore(seller, seller.shipments?.[0] || null);
-    return store ? ` · ${collectionStoreCompactLabel(store)}` : "";
+  if (cnc) {
+    const store = resolveCollectionStore(seller, firstCncShipment(seller));
+    const cncLabel = store
+      ? store.name && store.id
+        ? hdIds.length
+          ? `${store.name} (${store.id})`
+          : collectionStoreCompactLabel(store)
+        : collectionStoreCompactLabel(store)
+      : "";
+    if (hdIds.length) {
+      return cncLabel ? ` · Click & Collect · ${cncLabel}` : "";
+    }
+    return cncLabel ? ` · ${cncLabel}` : "";
   }
-  const id = sellerHdStoreId(seller);
-  return id ? ` · Store ${id}` : "";
+
+  if (!detailMode) return "";
+  const hd = formatHdStoreIds(hdIds);
+  return hd ? ` · ${hd}` : "";
 }
 
 /** Day range for seller promise — 23–25 Sep or 30 Sep–2 Oct. */
@@ -4989,22 +5194,22 @@ function formatLastMileWhen(timestamp) {
   return formatEventWhenShort(timestamp);
 }
 
-/** Latest: when · owner (+ tracking). Earlier: status label + when · owner. */
-function eventRow(ev, { latest = false, tracking = null } = {}) {
+/** Latest: when, then Shippit/carrier event · owner. Heading holds Guide-normalised status. */
+function eventRow(ev, { latest = false, sourceHtml = "" } = {}) {
   const mapped = mapShippitStatus(ev.rawStatus);
-  const whenOwner = `${formatLastMileWhen(ev.timestamp)} · ${ev.statusOwner || "—"}`;
+  const sourceLabel = ev.sourceLabel || mapped?.sourceLabel || mapped?.label || ev.rawStatus || "—";
+  const owner = ev.statusOwner || "—";
+  const when = formatLastMileWhen(ev.timestamp);
+  const eventLine = `${sourceLabel} · ${owner}`;
 
   if (latest) {
     return `
       <li class="track-event is-latest">
         <span class="track-event-dot" aria-hidden="true"></span>
         <div>
-          <div class="track-event-when">${whenOwner}</div>
-          ${
-            tracking
-              ? `<div class="track-event-tracking"><span>Tracking ${tracking}</span>${copyControl(tracking, "tracking number")}</div>`
-              : ""
-          }
+          <div class="track-event-when">${when}</div>
+          <div class="track-event-detail">${eventLine}</div>
+          ${sourceHtml}
         </div>
       </li>`;
   }
@@ -5013,8 +5218,8 @@ function eventRow(ev, { latest = false, tracking = null } = {}) {
     <li class="track-event">
       <span class="track-event-dot" aria-hidden="true"></span>
       <div>
-        <div class="track-event-label">${mapped.label}</div>
-        <div class="track-event-meta">${whenOwner}</div>
+        <div class="track-event-label">${sourceLabel}</div>
+        <div class="track-event-meta">${when} · ${owner}</div>
       </div>
     </li>`;
 }
@@ -5029,8 +5234,41 @@ function carrierIdentityHtml(carrier) {
     </div>`;
 }
 
-function carrierIdentity(shippit) {
-  return carrierIdentityHtml(carriers[shippit?.carrierId]);
+function carrierTrackingPageUrl(carrier, tracking, explicitUrl = null) {
+  if (explicitUrl) return explicitUrl;
+  if (!carrier?.trackingPage || !tracking) return null;
+  return carrier.trackingPage.replace("{tracking}", encodeURIComponent(tracking));
+}
+
+function trackingNumberLinkHtml({ tracking, url, carrierName }) {
+  if (!tracking) return "";
+  if (!url) {
+    return `<span class="ship-tracking-ref">${tracking}</span>`;
+  }
+  const title = carrierName
+    ? `View tracking on ${carrierName}`
+    : "View tracking on carrier";
+  return `<a
+      class="ship-tracking-link"
+      href="${url}"
+      target="_blank"
+      rel="noopener noreferrer"
+      data-action="open-carrier-track"
+      data-carrier="${carrierName || ""}"
+      data-tracking="${tracking}"
+      title="${title}"
+    >${tracking} <span class="ship-tracking-ext" aria-hidden="true">↗</span></a>`;
+}
+
+function shipmentCarrierSideHtml({ carrier, tracking, trackingUrl }) {
+  const identity = carrierIdentityHtml(carrier);
+  const ref = trackingNumberLinkHtml({
+    tracking,
+    url: trackingUrl,
+    carrierName: carrier?.name,
+  });
+  if (!identity && !ref) return "";
+  return `<div class="ship-carrier-side">${identity}${ref}</div>`;
 }
 
 /**
@@ -5047,18 +5285,24 @@ function shipmentTrackingCapability(ship) {
     shippit.rawStatus !== "untrackable";
 
   if (enhancedOk) {
+    const carrier = carriers[shippit.carrierId] || null;
     return {
       mode: "enhanced",
       tracking,
       shippit,
-      carrier: carriers[shippit.carrierId] || null,
+      carrier,
       trackingUrl: shippit.trackingUrl || null,
+      carrierTrackingUrl: carrierTrackingPageUrl(carrier, tracking),
     };
   }
 
   const carrierId = ship.carrierId || shippit?.carrierId || null;
   const carrier = carrierId ? carriers[carrierId] || null : null;
-  const trackingUrl = ship.carrierTrackingUrl || null;
+  const trackingUrl = carrierTrackingPageUrl(
+    carrier,
+    tracking,
+    ship.carrierTrackingUrl || null
+  );
 
   if (tracking && (carrier || trackingUrl)) {
     return {
@@ -5135,35 +5379,16 @@ function standardAgeBlock(ship) {
  * OMS status stays on the shipment header; no hero heading, journey, or SLA.
  */
 function standardTrackingPanel(ship, cap) {
-  const carrier = cap.carrier;
-  const tracking = cap.tracking;
-  const hasUrl = !!cap.trackingUrl;
   const age = standardAgeBlock(ship);
-
-  const trackingRef = tracking
-    ? `<div class="std-track-ref"><span>Tracking <span class="std-track-number">${tracking}</span></span>${copyControl(tracking, "tracking number")}</div>`
-    : "";
-
-  const cta = hasUrl
-    ? `<a
-        class="btn btn-md btn-primary btn-track-parcel"
-        href="${cap.trackingUrl}"
-        target="_blank"
-        rel="noopener noreferrer"
-        data-action="open-carrier-track"
-        data-carrier="${carrier?.id || ""}"
-        data-tracking="${tracking || ""}"
-        title="${carrier ? `Opens ${carrier.name} tracking` : "Opens carrier tracking"}"
-      >Track parcel ↗</a>`
-    : "";
-
   return `
     <div class="ship-track-enhance ship-track-standard" data-component="standard-carrier-tracking">
       <div class="std-track-row">
-        ${carrierIdentityHtml(carrier)}
-        ${cta}
+        ${shipmentCarrierSideHtml({
+          carrier: cap.carrier,
+          tracking: cap.tracking,
+          trackingUrl: cap.trackingUrl,
+        })}
       </div>
-      ${trackingRef}
       ${age}
     </div>`;
 }
@@ -5310,82 +5535,70 @@ function journeyIndicator(shippit, sla = null) {
 }
 
 /**
- * Task-language for the external Shippit link — same tracking_url, different Care job.
- * Delivered CTA lives in the pathway panel (not duplicated here).
+ * Timeline attribution — Shippit is the tracking data source, not the carrier.
  */
-function shippitCtaLabel(mapped) {
-  if (mapped?.pathway === "delivered" || mapped?.kind === "terminal") {
-    return "View proof of delivery";
+function shippitSourceLineHtml(shippit, tracking) {
+  if (!shippit) return "";
+  const link = shippit.trackingUrl
+    ? `<a
+        class="ship-shippit-link"
+        href="${shippit.trackingUrl}"
+        target="_blank"
+        rel="noopener noreferrer"
+        data-action="open-shippit"
+        data-tracking="${tracking || ""}"
+        title="Opens Shippit tracking"
+      >View in Shippit ↗</a>`
+    : "";
+  if (!link) {
+    return `<p class="track-event-source">Tracking updates via Shippit</p>`;
   }
-  if (mapped?.pathway === "attempted") {
-    return "View delivery attempt details";
-  }
-  if (mapped?.kind === "exception") {
-    return "View tracking details";
-  }
-  return "Open in Shippit";
-}
-
-function isDeliveredMapped(mapped) {
-  return mapped?.pathway === "delivered" || mapped?.kind === "terminal";
-}
-
-function shippitExternalLink(shippit, tracking, mapped) {
-  if (!shippit?.trackingUrl) return "";
-  const label = shippitCtaLabel(mapped);
-  return `
-    <a
-      class="ship-shippit-link"
-      href="${shippit.trackingUrl}"
-      target="_blank"
-      rel="noopener noreferrer"
-      data-action="open-shippit"
-      data-tracking="${tracking || ""}"
-      title="Opens Shippit tracking"
-    >${label} ↗</a>`;
+  return `<p class="track-event-source">Tracking updates via Shippit <span class="meta-sep" aria-hidden="true">·</span> ${link}</p>`;
 }
 
 /**
- * Carrier evidence: status → journey → latest event.
- * Earlier updates expand in place; contextual Shippit CTA sits with the disclosure
- * (except Delivered — POD CTA lives in the pathway panel below).
+ * Carrier evidence: status → journey → latest event (with Shippit as data source).
+ * Earlier updates expand in place. Delivered POD CTA lives in the pathway panel below.
  */
 function carrierEvidence(ship, shippit, mapped, tracking, sla = null) {
   const events = sortEventsByTimestamp(shippit?.events || []);
   const open = !!state.historyOpen[ship.id];
   const [latest, ...earlier] = events;
-  const delivered = isDeliveredMapped(mapped);
   const historyToggle = earlier.length
     ? `<button type="button" class="delivery-progress-toggle" data-action="toggle-history" data-ship="${ship.id}" aria-expanded="${open}">
         ${open ? "Hide earlier updates ⌃" : "Show earlier updates ⌄"}
       </button>`
     : "";
-  const shippitLink = delivered ? "" : shippitExternalLink(shippit, tracking, mapped);
-  const actions =
-    historyToggle || shippitLink
-      ? `<div class="ship-carrier-actions">
-          ${historyToggle || "<span></span>"}
-          ${shippitLink}
-        </div>`
-      : "";
+
+  const carrier = carriers[shippit?.carrierId] || null;
+  const carrierUrl = carrierTrackingPageUrl(carrier, tracking);
 
   return `
     <div class="ship-carrier">
       <div class="ship-status-head">
-        <div class="ship-status-title">${mapped.label}</div>
-        ${carrierIdentity(shippit)}
+        <div class="ship-status-copy">
+          <div class="ship-status-title">${mapped.label}</div>
+          ${mapped.explanation ? `<p class="ship-status-explain">${mapped.explanation}</p>` : ""}
+        </div>
+        ${shipmentCarrierSideHtml({
+          carrier,
+          tracking,
+          trackingUrl: carrierUrl,
+        })}
       </div>
-      <p class="ship-status-explain">${mapped.explanation}</p>
       ${journeyIndicator(shippit, sla)}
       ${
         latest
           ? `<ol class="track-event-list">
-              ${eventRow(latest, { latest: true, tracking })}
+              ${eventRow(latest, {
+                latest: true,
+                sourceHtml: shippitSourceLineHtml(shippit, tracking),
+              })}
               ${open ? earlier.map((ev) => eventRow(ev)).join("") : ""}
             </ol>`
           : ""
       }
-      ${actions}
+      ${historyToggle ? `<div class="ship-carrier-actions">${historyToggle}</div>` : ""}
     </div>`;
 }
 
@@ -5692,9 +5905,13 @@ function shipmentBlock(
       trackCap.mode === "standard" ||
       isClickCollectFulfilment(seller, ship));
   const carrierName = shipmentCarrierName(ship);
-  /** Standard expanded: carrier lives in the compact tracking row — not duplicated in meta. */
+  /** Expanded cockpit owns carrier identity — don't repeat it on the metadata line. */
   const showCarrierInMeta =
-    !(trackMode && trackCap?.mode === "standard" && isShipmentExpanded(ship, seller));
+    !(
+      trackMode &&
+      isShipmentExpanded(ship, seller) &&
+      (trackCap?.mode === "standard" || trackCap?.mode === "enhanced")
+    );
 
   const packagesHtml = `
     <div class="package-stack">
@@ -5798,14 +6015,10 @@ function sellerBlock(
 
   const shipCount = seller.shipments.length;
   const itemTotal = seller.itemCount;
-  const kindChip =
-    seller.kind === "marketplace"
-      ? `<span class="seller-kind-chip">Marketplace</span>`
-      : "";
   const detailMode = !refundMode && !trackMode;
   const collapsed = isSellerCollapsed(seller, { collapsible, trackMode });
   const attention = trackMode && sellerHasAttention(seller);
-  const storeBit = sellerStoreMetaBit(seller);
+  const storeBit = sellerStoreMetaBit(seller, { detailMode });
   const etaHtml = sellerPromisedEtaHtml(seller);
 
   const meta = detailMode
@@ -5832,8 +6045,7 @@ function sellerBlock(
   const headInner = `
     <div class="seller-head-main">
       <div class="seller-title-row-inline">
-        <div class="seller-title">${seller.name}</div>
-        ${kindChip}
+        ${sellerIdentityHtml(seller)}
         ${
           attention && collapsed
             ? `<span class="seller-attention" title="Needs attention">Needs attention</span>`
@@ -5850,13 +6062,14 @@ function sellerBlock(
     }`;
 
   const head = collapsible
-    ? `<button
-        type="button"
+    ? `<div
         class="seller-head seller-toggle"
+        role="button"
+        tabindex="0"
         data-action="toggle-seller"
         data-seller="${seller.id}"
         aria-expanded="${collapsed ? "false" : "true"}"
-      >${headInner}</button>`
+      >${headInner}</div>`
     : `<div class="seller-head">${headInner}</div>`;
 
   return `
@@ -5908,6 +6121,7 @@ function totals({ refundMode = false } = {}) {
           <span>Refund to</span>
           <span>${refundPaymentDestinationLabel()}</span>
         </div>
+        ${refundApprovalCueHtml(amount)}
         ${reviewCaseDestinationHtml()}
       </section>`;
   }
@@ -5985,6 +6199,73 @@ function refundHistorySection() {
     </section>`;
 }
 
+const MANHATTAN_NOTES_PREVIEW = 3;
+
+/**
+ * Manhattan Order Notes — operational notes on the order in Manhattan.
+ * Collapsed by default on Order Detail. Never mixed with Amazon Connect case notes.
+ */
+function manhattanOrderNotesSection() {
+  const notes = [...(manhattanOrderNotes || [])].sort(
+    (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)
+  );
+  if (!notes.length) return "";
+
+  const open = !!state.manhattanNotesOpen;
+  const showAll = !!state.manhattanNotesShowAll || notes.length <= MANHATTAN_NOTES_PREVIEW;
+  const visible = open
+    ? showAll
+      ? notes
+      : notes.slice(0, MANHATTAN_NOTES_PREVIEW)
+    : [];
+  const more = notes.length > MANHATTAN_NOTES_PREVIEW;
+
+  const rows = visible
+    .map(
+      (note) => `
+      <li class="manhattan-note">
+        <p class="manhattan-note-meta">${formatManhattanNoteWhen(note.timestamp)} · ${escapeHtml(note.agent || "—")}</p>
+        <p class="manhattan-note-body">${escapeHtml(note.description || "")}</p>
+      </li>`
+    )
+    .join("");
+
+  const remaining = notes.length - MANHATTAN_NOTES_PREVIEW;
+  const viewAll = open && more
+    ? `<div class="manhattan-notes-footer">
+        <button
+          type="button"
+          class="linkish manhattan-notes-more"
+          data-action="toggle-manhattan-notes-all"
+          aria-expanded="${showAll ? "true" : "false"}"
+        >${
+          showAll
+            ? "Show fewer"
+            : `View ${remaining} more note${remaining === 1 ? "" : "s"}`
+        }${showAll ? "" : " <span aria-hidden=\"true\">⌄</span>"}</button>
+      </div>`
+    : "";
+
+  return `
+    <section class="card manhattan-notes${open ? " is-open" : " is-collapsed"}" aria-labelledby="manhattan-notes-heading">
+      <button
+        type="button"
+        class="manhattan-notes-band"
+        data-action="toggle-manhattan-notes"
+        aria-expanded="${open ? "true" : "false"}"
+      >
+        <h2 id="manhattan-notes-heading">Manhattan Order Notes</h2>
+        <span class="manhattan-notes-count">${notes.length} note${notes.length === 1 ? "" : "s"}</span>
+        <span class="manhattan-notes-chevron" aria-hidden="true">${open ? "⌃" : "⌄"}</span>
+      </button>
+      ${
+        open
+          ? `<ol class="manhattan-notes-list">${rows}</ol>${viewAll}`
+          : ""
+      }
+    </section>`;
+}
+
 /**
  * Order detail/track shell — hero then workspace.
  * Verification toast anchors to the Customer card in the rail.
@@ -6004,6 +6285,7 @@ function renderDetail() {
       ${sellersSection({ refundMode: false, collapsible: true })}
       ${totals()}
       ${refundHistorySection()}
+      ${manhattanOrderNotesSection()}
       ${orderActionsPanel()}
     `,
       { showRail: true }
@@ -6268,6 +6550,7 @@ function render() {
     </div>
     ${customerContextDrawer()}
     ${leaveConfirmDialog()}
+    ${refundApprovalDialog()}
     ${unlinkConfirmDialog()}
     ${createCaseDuplicateDialog()}
     ${caseNoteDialog()}
@@ -6279,6 +6562,14 @@ function render() {
     if (state.caseNoteOpen) {
       requestAnimationFrame(() => {
         root.querySelector("#case-note-text")?.focus();
+      });
+    } else if (state.refundApprovalPrompt) {
+      requestAnimationFrame(() => {
+        root
+          .querySelector(
+            '[data-action="refund-approval-yes"], [data-action="refund-approval-close"]'
+          )
+          ?.focus();
       });
     } else if (state.customerDrawer) {
       requestAnimationFrame(() => {
@@ -6410,6 +6701,8 @@ function openSelectableOrder(orderId, { preserveLinkedCase = false } = {}) {
   resetRefundSelection();
   resetCancelSelection();
   state.historyOpen = {};
+  state.manhattanNotesOpen = false;
+  state.manhattanNotesShowAll = false;
   state.sellerCollapsed = {};
   state.shipmentOpen = {};
   state.actionsMenuOpen = false;
@@ -6745,6 +7038,7 @@ damageApi = bindReportDamage({
   reviewCaseDestinationHtml,
   formatPhone: formatHistoryPhone,
   sellerRefundsInMirakl,
+  miraklHandoffSellerBlock,
 });
 
 if (rootEl) {
@@ -6984,13 +7278,26 @@ if (rootEl) {
         showToast("Fix the shipping refund amount");
         return;
       }
-      const caseRec = ensureServicingCase({ topic: "Refund" });
-      showToast(`Refund ${money(amount)} recorded on case #${caseRec.id} (prototype)`);
-      resetRefundSelection();
-      state.leaveConfirm = null;
-      state.view = state.originView || "detail";
+      if (refundRequiresApproval(amount)) {
+        state.refundApprovalPrompt = "ask";
+        render();
+        return;
+      }
+      completeRefundSubmit();
+      return;
+    }
+    if (action === "refund-approval-yes") {
+      completeRefundSubmit();
+      return;
+    }
+    if (action === "refund-approval-no") {
+      state.refundApprovalPrompt = "need-form";
       render();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "refund-approval-close") {
+      state.refundApprovalPrompt = null;
+      render();
       return;
     }
     if (action === "start-refund") {
@@ -7180,6 +7487,17 @@ if (rootEl) {
         render();
       }
     }
+    if (action === "toggle-manhattan-notes") {
+      state.manhattanNotesOpen = !state.manhattanNotesOpen;
+      if (!state.manhattanNotesOpen) state.manhattanNotesShowAll = false;
+      render();
+      return;
+    }
+    if (action === "toggle-manhattan-notes-all") {
+      state.manhattanNotesShowAll = !state.manhattanNotesShowAll;
+      render();
+      return;
+    }
     if (action === "toggle-seller") {
       const id =
         e.target.getAttribute("data-seller") ||
@@ -7366,12 +7684,21 @@ if (rootEl) {
         actionEl?.getAttribute("data-channel") ||
         "mirakl";
       console.info("[analytics] open_mirakl", sellerId, channel);
-      showToast(`Opened Mirakl for ${channel} refund (prototype)`);
+      showToast("Opened seller in Mirakl");
       return;
     }
     if (action === "retry-shippit") {
       showToast("Retrying Shippit… (prototype)");
     }
+  });
+
+  rootEl.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    if (e.target.closest("a, button, input, textarea, select")) return;
+    const toggle = e.target.closest(".seller-toggle[data-action='toggle-seller']");
+    if (!toggle) return;
+    e.preventDefault();
+    toggle.click();
   });
 
   rootEl.addEventListener("submit", (e) => {

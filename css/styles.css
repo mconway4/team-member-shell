@@ -888,40 +888,12 @@ button.review-case-destination-ref:focus-visible {
   border-radius: 6px;
 }
 
-.cancel-action-item.is-blocked .checkbox:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/**
- * Disabled cancel rows stay readable — order context, not ghosts.
- * Override Refund's heavier .is-blocked opacity wash.
- */
-.cancel-action-item.is-blocked > .refund-item-main {
-  opacity: 1;
-}
-
-.cancel-action-item.is-blocked .item-name,
-.cancel-action-item.is-blocked .item-qty-inline {
-  color: var(--text-secondary);
-  font-weight: 550;
-}
-
-.cancel-action-item.is-blocked .refund-item-amount {
-  color: var(--text-secondary);
-  font-weight: 550;
-}
-
-.cancel-action-item.is-blocked .thumb {
-  opacity: 0.78;
-  filter: saturate(0.85);
-}
-
 .cancel-action-item.is-selected {
   background: color-mix(in srgb, var(--km-primary) 4%, transparent);
 }
 
-.cancel-ship-elig {
+.cancel-ship-elig,
+.cancel-line-elig {
   margin: 6px 0 0;
   font-size: 12px;
   font-weight: 600;
@@ -929,8 +901,63 @@ button.review-case-destination-ref:focus-visible {
   line-height: 1.35;
 }
 
+.cancel-line-elig {
+  margin-top: 3px;
+  font-weight: 500;
+}
+
 .shipment-block-cancel.is-disabled-ship .refund-ship-title-row h3 {
   color: var(--text);
+}
+
+/**
+ * Cancel selector — no shipment cards. Selectable lines are white rows;
+ * ineligible lines sit on the grey seller body. Grouping is divider + space.
+ */
+.shipment-block-cancel.is-disabled-ship,
+.shipment-block-cancel.is-select-ship {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.seller-card-cancel .seller-body:has(> .shipment-block-cancel.is-disabled-ship),
+.seller-card-cancel .seller-body:has(> .shipment-block-cancel.is-select-ship) {
+  gap: 0;
+}
+
+.seller-card-cancel .seller-body > .shipment-block-cancel.is-disabled-ship + .shipment-block-cancel,
+.seller-card-cancel .seller-body > .shipment-block-cancel.is-select-ship + .shipment-block-cancel {
+  margin-top: 18px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.shipment-block-cancel.is-disabled-ship .refund-ship-body,
+.shipment-block-cancel.is-select-ship .refund-ship-body {
+  margin-top: 4px;
+}
+
+.shipment-block-cancel.is-select-ship .cancel-select-items {
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+}
+
+.shipment-block-cancel.is-select-ship .cancel-action-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.shipment-block-cancel.is-select-ship .refund-handoff-item {
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .cancel-elig {
@@ -2667,7 +2694,8 @@ button.review-case-destination-ref:focus-visible {
   border-radius: var(--km-radius-card) var(--km-radius-card) 0 0;
 }
 
-button.seller-toggle {
+button.seller-toggle,
+.seller-head.seller-toggle {
   width: 100%;
   border: none;
   border-bottom: 1px solid var(--border);
@@ -2679,15 +2707,18 @@ button.seller-toggle {
   transition: background-color 120ms ease;
 }
 
-button.seller-toggle:hover {
+button.seller-toggle:hover,
+.seller-head.seller-toggle:hover {
   background: var(--km-primary-bg);
 }
 
-button.seller-toggle:hover .seller-chevron {
+button.seller-toggle:hover .seller-chevron,
+.seller-head.seller-toggle:hover .seller-chevron {
   color: var(--km-primary);
 }
 
-button.seller-toggle:focus-visible {
+button.seller-toggle:focus-visible,
+.seller-head.seller-toggle:focus-visible {
   outline: 2px solid var(--km-primary);
   outline-offset: -2px;
   background: var(--km-primary-bg);
@@ -3298,6 +3329,72 @@ th.num {
   color: var(--text);
 }
 
+.refund-approval-cue {
+  margin: 10px 0 4px;
+  padding: 8px 12px;
+  border-radius: var(--km-radius-md);
+  border: 1px solid color-mix(in srgb, var(--km-warning) 35%, var(--border));
+  background: var(--km-warning-bg);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.refund-approval-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.refund-approval-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  font-size: inherit;
+  font-weight: 700;
+  color: var(--km-warning);
+}
+
+.refund-approval-icon {
+  display: inline-flex;
+  color: var(--km-warning);
+  flex-shrink: 0;
+}
+
+.refund-approval-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.refund-approval-detail {
+  margin: 3px 0 0;
+  font-size: inherit;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.refund-approval-form-wrap {
+  margin: 0 0 var(--km-space-lg);
+}
+
+.refund-approval-form-link {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--km-primary);
+  font-size: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.refund-approval-form-link:hover,
+.refund-approval-form-link:focus-visible {
+  text-decoration: underline;
+}
+
 .refund-history {
   margin-top: var(--km-space-lg);
   padding: var(--km-space-lg) var(--km-space-xl);
@@ -3309,6 +3406,116 @@ th.num {
 .refund-history.is-flash {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--km-primary) 35%, transparent);
   background: color-mix(in srgb, var(--km-primary-bg) 45%, var(--surface));
+}
+
+.manhattan-notes {
+  margin-top: var(--km-space-lg);
+  padding: 0;
+}
+
+.manhattan-notes-band {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 12px var(--km-space-xl);
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.manhattan-notes-band:hover {
+  background: var(--km-primary-bg);
+}
+
+.manhattan-notes-band:focus-visible {
+  outline: 2px solid var(--km-primary);
+  outline-offset: -2px;
+}
+
+.manhattan-notes-band h2 {
+  margin: 0;
+  font-size: var(--km-fs-body-lg);
+  font-weight: 700;
+}
+
+.manhattan-notes-count {
+  font-size: var(--km-fs-body-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.manhattan-notes-count::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--muted);
+}
+
+.manhattan-notes-chevron {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.manhattan-notes-band:hover .manhattan-notes-chevron {
+  color: var(--km-primary);
+}
+
+.manhattan-notes.is-open .manhattan-notes-band {
+  border-bottom: 1px solid var(--border);
+}
+
+.manhattan-notes-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px var(--km-space-xl) 2px;
+}
+
+.manhattan-note {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.manhattan-note:first-child {
+  padding-top: 10px;
+  border-top: none;
+}
+
+.manhattan-note-meta {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.manhattan-note-body {
+  margin: 3px 0 0;
+  font-size: var(--km-fs-body-sm);
+  font-weight: 400;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.manhattan-notes-footer {
+  margin: 0;
+  padding: 12px var(--km-space-xl) 14px;
+  border-top: 1px solid var(--border);
+}
+
+.manhattan-notes-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  font-size: var(--km-fs-body-sm);
 }
 
 .refund-history-head {
@@ -3607,8 +3814,8 @@ th.num {
 
 .refund-handoff-thumb,
 .refund-handoff-item .thumb {
-  opacity: 0.65;
-  filter: saturate(0.75);
+  opacity: 0.82;
+  filter: saturate(0.88);
 }
 
 /**
@@ -4175,6 +4382,10 @@ button.workflow-case-cue-ref:focus-visible {
   color: var(--text);
 }
 
+.create-case-seller-head .seller-title-row-inline {
+  margin-bottom: 2px;
+}
+
 .create-case-seller-head p {
   margin: 2px 0 12px;
   font-size: var(--km-fs-body-sm);
@@ -4443,7 +4654,10 @@ button.workflow-case-cue-ref:focus-visible {
   padding: 10px 12px;
 }
 
-.refund-pkg-items .refund-item + .refund-item {
+.refund-pkg-items .refund-item + .refund-item,
+.refund-pkg-items .refund-handoff-item + .refund-handoff-item,
+.refund-pkg-items .refund-item + .refund-handoff-item,
+.refund-pkg-items .refund-handoff-item + .refund-item {
   border-top: 1px solid var(--border);
 }
 
@@ -5071,9 +5285,42 @@ button.ship-header-band:hover .ship-chevron {
   width: 100%;
 }
 
+.seller-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.seller-identity-sep {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.contact-seller-link {
+  margin-left: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--km-primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: var(--km-fs-body-sm);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.contact-seller-link:hover,
+.contact-seller-link:focus-visible {
+  text-decoration: underline;
+}
+
 .seller-attention {
   display: inline-flex;
   align-items: center;
+  margin-left: auto;
   padding: 2px 8px;
   border-radius: var(--km-radius-sm);
   font-size: 11px;
@@ -5147,8 +5394,9 @@ button.ship-header-band:hover .ship-chevron {
 
 /**
  * Shipment action hierarchy (same Kosmos medium primary button; context = meaning):
- * 1. Component primary CTA → primary button (Track parcel, Create case, Refund shipping, View POD)
- * 2. Optional deeper detail → text link (Open in Shippit ↗, Show earlier updates)
+ * 1. Component primary CTA → primary button (Create case, Refund shipping, View POD)
+ * 2. Carrier tracking → tracking number link (AU99340122 ↗)
+ * 3. Optional deeper detail → text link (View in Shippit ↗, Show earlier updates)
  */
 .btn {
   display: inline-flex;
@@ -5297,9 +5545,17 @@ a.btn {
 .ship-status-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px 16px;
+}
+
+.ship-status-copy {
+  min-width: 0;
+  flex: 1 1 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .ship-status-title {
@@ -5317,6 +5573,36 @@ a.btn {
   font-size: var(--km-fs-body-sm);
   font-weight: 500;
   flex-shrink: 0;
+}
+
+.ship-carrier-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.ship-tracking-link {
+  color: var(--km-primary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.ship-tracking-link:hover {
+  color: var(--km-primary-hover);
+}
+
+.ship-tracking-ref {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .ship-carrier-logo {
@@ -5407,14 +5693,11 @@ a.btn {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 16px;
-  margin-top: 2px;
+  margin-top: 6px;
 }
 
 .ship-track-enhance .ship-carrier-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
   margin-top: 4px;
 }
 
@@ -5438,8 +5721,8 @@ a.btn {
 .ship-track-standard .std-track-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 6px 12px;
   min-height: 0;
 }
@@ -5532,6 +5815,11 @@ a.btn {
   align-items: center;
 }
 
+.ship-track-standard .ship-carrier-side {
+  align-items: flex-start;
+  text-align: left;
+}
+
 .ship-track-standard .ship-carrier-logo {
   width: 20px;
   height: 20px;
@@ -5588,8 +5876,7 @@ a.btn {
 }
 
 /* External system handoff — Guide can't complete; navigate elsewhere (Shippit, Mirakl). */
-.external-system-link,
-.ship-shippit-link {
+.external-system-link {
   margin-left: auto;
   padding: 0;
   border: none;
@@ -5598,6 +5885,19 @@ a.btn {
   font: inherit;
   font-weight: 600;
   font-size: var(--km-fs-body-sm);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ship-shippit-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--km-primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: inherit;
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
@@ -5797,6 +6097,26 @@ a.btn {
   font-weight: 600;
   font-size: 13px;
   color: var(--text);
+}
+
+.track-event-detail {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.track-event-source {
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.track-event-source .meta-sep {
+  margin: 0 4px;
 }
 
 /** Copy sits beside the tracking number — never stretched to the row edge. */

@@ -239,17 +239,70 @@ const hdRefundHistory = [
   },
 ];
 
+/**
+ * Operational notes recorded against the order in Manhattan.
+ * Distinct from Amazon Connect case notes / updates — never mixed in the UI.
+ */
+const hdManhattanOrderNotes = [
+  {
+    timestamp: "2026-10-02T15:42:00+10:00",
+    agent: "M. Conway",
+    description:
+      "Customer requested cancellation. Unable to cancel as picking had commenced.",
+  },
+  {
+    timestamp: "2026-09-28T11:50:00+10:00",
+    agent: "S. Nguyen",
+    description:
+      "Shipping refund of $23.00 applied for delayed Big & Bulky delivery.",
+  },
+  {
+    timestamp: "2026-09-28T09:15:00+10:00",
+    agent: "A. Patel",
+    description:
+      "Customer contacted re delay on AU99340122. Advised parcel still in transit with Couriers Please.",
+  },
+  {
+    timestamp: "2026-09-26T16:05:00+10:00",
+    agent: "M. Conway",
+    description: "Item refund processed for 1× 12 Foot Springless Trampoline (cancellation).",
+  },
+  {
+    timestamp: "2026-09-25T14:22:00+10:00",
+    agent: "R. Singh",
+    description: "Shipment 1 confirmed delivered. Proof of delivery available in Shippit.",
+  },
+  {
+    timestamp: "2026-09-24T10:08:00+10:00",
+    agent: "S. Nguyen",
+    description: "Split shipment created from Store 1240 for Big & Bulky line.",
+  },
+  {
+    timestamp: "2026-09-23T11:30:00+10:00",
+    agent: "A. Patel",
+    description: "Delivery address verified with customer. Authority to leave confirmed.",
+  },
+  {
+    timestamp: "2026-09-21T16:40:00+10:00",
+    agent: "M. Conway",
+    description:
+      "Order released. Mixed seller fulfilment — Kmart home delivery plus Target and Marketplace lines.",
+  },
+];
+
 /** Shipment-level carrier identity (who is delivering) — distinct from event status_owner. */
 export const carriers = {
   "australia-post": {
     id: "australia-post",
     name: "Australia Post",
     logo: "./assets/carriers/australia-post.png",
+    trackingPage: "https://auspost.com.au/mypost/track/details/{tracking}",
   },
   "couriers-please": {
     id: "couriers-please",
     name: "Couriers Please",
     logo: "./assets/carriers/couriers-please.png",
+    trackingPage: "https://www.couriersplease.com.au/tools/track?l={tracking}",
   },
   uber: {
     id: "uber",
@@ -503,6 +556,7 @@ const hdSellers = [
     name: "Target",
     kind: "target",
     delivery: "HD",
+    miraklUrl: "https://kmart.mirakl.net/mmp/operator/order/T5072-99102",
     status: "Shipped",
     itemCount: 3,
     merchandiseTotal: 36.0,
@@ -557,6 +611,7 @@ const hdSellers = [
     name: "Outdoor Living Hub",
     kind: "marketplace",
     delivery: "HD",
+    miraklUrl: "https://kmart.mirakl.net/mmp/operator/order/MP-774201",
     /** Fulfilment status only — carrier last-mile not retrieved. */
     status: "Shipped",
     itemCount: 1,
@@ -744,6 +799,7 @@ const cncMpSellers = [
     name: "Outdoor Living Hub",
     kind: "marketplace",
     delivery: "HD",
+    miraklUrl: "https://kmart.mirakl.net/mmp/operator/order/MP-8842101",
     status: "Shipped",
     itemCount: 1,
     merchandiseTotal: 49.0,
@@ -810,6 +866,7 @@ export const demoOrders = {
     shipTo: hdShipTo,
     destinationService: hdDestinationService,
     refundHistory: hdRefundHistory,
+    manhattanOrderNotes: hdManhattanOrderNotes,
     shippitByTracking: hdShippitByTracking,
   },
   [DEMO_ORDER_CNC_MP]: {
@@ -820,6 +877,7 @@ export const demoOrders = {
     shipTo: hdShipTo,
     destinationService: cncMpDestinationService,
     refundHistory: [],
+    manhattanOrderNotes: [],
     shippitByTracking: {},
   },
 };
@@ -832,6 +890,7 @@ export let sellers = hdSellers;
 export let shipTo = hdShipTo;
 export let destinationService = hdDestinationService;
 export let refundHistory = hdRefundHistory;
+export let manhattanOrderNotes = hdManhattanOrderNotes;
 export let shippitByTracking = hdShippitByTracking;
 export let activeDemoOrderId = DEMO_ORDER_HD;
 
@@ -845,6 +904,7 @@ export function loadDemoOrder(id) {
   shipTo = demo.shipTo;
   destinationService = demo.destinationService;
   refundHistory = demo.refundHistory;
+  manhattanOrderNotes = demo.manhattanOrderNotes || [];
   shippitByTracking = demo.shippitByTracking;
   activeDemoOrderId = id;
   return true;
