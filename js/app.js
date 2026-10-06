@@ -19,7 +19,7 @@ import {
   loadDemoOrder,
   isSelectableDemoOrder,
   demoOrderIds,
-} from "./data.js?v=recent-orders-1";
+} from "./data.js?v=actions-case-dual";
 import {
   assessJourney,
   assessSla,
@@ -30,7 +30,11 @@ import {
   mapShippitStatus,
   sortEventsByTimestamp,
   trackingNumbersForShipment,
-} from "./shippit.js?v=recent-orders-1";
+} from "./shippit.js?v=actions-case-dual";
+import {
+  bindReportDamage,
+  emptyDamageState,
+} from "./report-damage.js?v=actions-case-dual";
 
 /** Format AUD; null/undefined means amount unavailable (not zero). */
 const money = (n) =>
@@ -55,8 +59,24 @@ const CANCEL_REASONS = [
   "Other",
 ];
 
+const CASE_TYPES = [
+  { id: "delivery", label: "Delivery / tracking", topic: "Delivery" },
+  { id: "cancellation", label: "Cancellation", topic: "Cancellation" },
+  { id: "refund", label: "Refund", topic: "Refund" },
+  { id: "product", label: "Product / item issue", topic: "Product" },
+  { id: "other", label: "Other", topic: "General" },
+];
+
+const CASE_TYPE_SUMMARY_HINTS = {
+  delivery: "Customer enquiry about delivery",
+  cancellation: "Customer enquiry about cancellation",
+  refund: "Customer enquiry about a refund",
+  product: "Customer enquiry about a product",
+  other: "Customer enquiry",
+};
+
 const state = {
-  view: "search", // search | history | detail | track | refund | cancel
+  view: "search", // search | history | detail | track | refund | cancel | create-case | create-case-done | damage
   /**
    * Selection-driven refund scope.
    * defaultReason = bulk merchandise default; itemReasonOverrides = line exceptions.
@@ -72,14 +92,44 @@ const state = {
     shippingAmountError: "",
   },
   /**
-   * Cancellation workflow — intent first, then eligibility-scoped action.
+   * Cancellation — scope first, then eligibility-aware selection / review.
    * intent: null | "entire" | "lines"
+   * step: "build" | "review"
    */
   cancel: {
     intent: null,
     reason: "",
+    notes: "",
     items: {}, // `${packageId}:${lineId}` → selected qty when intent=lines
+    step: "build",
   },
+  /**
+   * Create case — association is mandatory via scope.
+   * scope "order" = case concerns the order as a whole (not every line item).
+   * scope "specific" = one or more shipments/items below.
+   * outcome "resolved" | "follow-up" = create+close vs keep open.
+   */
+  createCase: {
+    type: "delivery",
+    summary: "",
+    notes: "",
+    scope: "order", // "order" | "specific"
+    outcome: "resolved", // "resolved" | "follow-up"
+    /** When scope is specific: `${shipId}:${lineId}` → true */
+    items: {},
+  },
+  /** Confirmation payload after Create case submit. */
+  createCaseResult: null,
+  /**
+   * Report damage workflow — progressive disclosure with evidence branching.
+   * See report-damage.js (step: select | evidence | upload | request | review | done).
+   */
+  damage: emptyDamageState(),
+  /**
+   * Quiet acknowledgment when a case was created and closed this session —
+   * not the Current Case (no active servicing context).
+   */
+  lastClosedCase: null,
   historyOpen: {}, // shipmentId → bool
   sellerCollapsed: {}, // sellerId → bool when user has toggled
   shipmentOpen: {}, // shipmentId → bool when user has toggled
@@ -87,10 +137,10 @@ const state = {
   searchError: null, // { type: "nz-order", query } when NZ can be reliably detected
   historyFilter: "",
   actionsMenuOpen: false,
-  /** View to return to after Refund / Cancel (detail | track). */
+  /** View to return to after Refund / Cancel / Create case (detail | track). */
   originView: "detail",
   /** Unsaved-leave prompt while in a task workflow. */
-  leaveConfirm: null, // { targetView, workflow: "refund" | "cancel" }
+  leaveConfirm: null, // { targetView, workflow: "refund" | "cancel" | "create-case" | "damage" }
   /** Pending scroll target after render (e.g. Refunded → Refund history). */
   pendingScroll: null, // null | "refund-history"
   /**
@@ -99,17 +149,25 @@ const state = {
    */
   customerDrawer: null,
   /**
-   * Active servicing case for Guide actions on this interaction.
-   * Distinct from “available open cases” in Case history.
-   * null = no case linked (completing actions will create a new case).
+   * Contact ↔ case association for this interaction.
+   * Distinct from order-action write-back (refund/cancel) and from Add note.
+   * null = interaction not associated with a case (simple WISMO may stay that way).
    */
   linkedCaseId: null,
   /** Prototype-only snapshot when Create case makes a case not in fixtures. */
   linkedCaseSnapshot: null,
   /** Set when Guide was opened from a case (e.g. ?case=123456) — auto-linked. */
   enteredFromCaseId: null,
-  /** Confirm before clearing the current servicing case association. */
+  /** Confirm before clearing the current contact ↔ case association. */
   unlinkConfirm: false,
+  /**
+   * Soft intercept when Create case is chosen while an open case exists for this order.
+   * Surfaces evidence; does not auto-link.
+   */
+  createCaseDuplicatePrompt: false,
+  /** Lightweight Update case draft on the current case. */
+  caseNoteOpen: false,
+  caseNoteText: "",
   /**
    * Handoff attribute from upstream AI — not a live verification status.
    * Demo default: true so the order screen shows the cue.
@@ -117,6 +175,11 @@ const state = {
    * URL: ?preverified=0 to demo without the signal.
    */
   aiThreeStepPreVerified: true,
+  /**
+   * Handoff attention on Customer card: null = not started; "active" = green outline;
+   * "done" = settled to normal border (✓ 3-step verified remains).
+   */
+  preVerifyAttention: null,
   search: {
     brand: "kmart",
     orderNumber: "",
@@ -128,6 +191,9 @@ const state = {
 };
 
 const PROTO_NOW_MS = Date.parse(PROTO_NOW);
+
+/** Bound after shared helpers exist — see initReportDamage(). */
+let damageApi = null;
 
 const icons = {
   copy: `<svg class="copy" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
@@ -227,15 +293,18 @@ function brandScopeControl() {
     </div>`;
 }
 
-/** Multi-package only — single package is the default and stays silent. */
-function packageCountIcon(count) {
+/**
+ * Multi-package cue in shipment identity — not a right-rail control.
+ * Single package is the default and stays silent.
+ */
+function shipmentPackageCountHtml(count) {
   const n = Number(count) || 0;
   if (n < 2) return "";
   const label = `${n} packages`;
   return `
-    <span class="pkg-count" title="${label}" aria-label="${label}">
-      ${icons.package}
-      <span class="pkg-count-badge">${n}</span>
+    <span class="ship-pkg-count" aria-label="${label}">
+      <span class="ship-pkg-count-icon" aria-hidden="true">${icons.package}</span>
+      ${label}
     </span>`;
 }
 
@@ -714,7 +783,10 @@ function orderFulfilmentKinds() {
   return kinds;
 }
 
-/** Identity-line fulfilment: icon + text per method; mixed joins with +. */
+/**
+ * Hero fulfilment type only — Home delivery / Click & Collect / both.
+ * Service level (Standard, Express, Same Day) lives in the rail + Track.
+ */
 function orderFulfilmentSummaryHtml() {
   const kinds = orderFulfilmentKinds();
   const parts = [];
@@ -1157,6 +1229,24 @@ function crumbs() {
       [`Order ${order.id}`, "detail"],
       ["Cancel", null],
     ],
+    "create-case": [
+      ["Order Search", "search"],
+      ["Order History", "history"],
+      [`Order ${order.id}`, "detail"],
+      ["Create case", null],
+    ],
+    "create-case-done": [
+      ["Order Search", "search"],
+      ["Order History", "history"],
+      [`Order ${order.id}`, "detail"],
+      ["Case created", null],
+    ],
+    damage: [
+      ["Order Search", "search"],
+      ["Order History", "history"],
+      [`Order ${order.id}`, "detail"],
+      ["Report damage", null],
+    ],
   }[state.view];
 
   return (trail || [])
@@ -1175,7 +1265,12 @@ function viewNav() {
     ["detail", "Order detail", icons.orderDetail],
     ["track", "Track shipments", icons.trackShipments],
   ];
-  const workflow = state.view === "refund" || state.view === "cancel";
+  const workflow =
+    state.view === "refund" ||
+    state.view === "cancel" ||
+    state.view === "create-case" ||
+    state.view === "create-case-done" ||
+    state.view === "damage";
   const current = workflow ? null : state.view;
   return `
     <div class="views${workflow ? " is-workflow" : ""}" role="tablist" aria-label="Order views">
@@ -1206,13 +1301,84 @@ function linkedCase() {
   return findCaseById(state.linkedCaseId) || state.linkedCaseSnapshot || null;
 }
 
-/** Track escalation CTA — create only when unlinked; else attach to linked case. */
-function trackCaseActionButtonHtml() {
-  const linked = linkedCase();
-  if (linked) {
-    return `<button type="button" class="btn btn-md btn-primary" data-action="attach-to-linked-case">Add to case #${linked.id}</button>`;
+/**
+ * Evidence for associating this interaction with an existing case.
+ * Levels: none | recent (customer open cases) | order (open case on this order).
+ * Never auto-links — Guide surfaces evidence; the agent chooses.
+ */
+function caseUpdatedAtMs(c) {
+  const t = Date.parse(c?.updatedAt || "");
+  return Number.isFinite(t) ? t : 0;
+}
+
+function casesByRecency(cases) {
+  return [...(cases || [])].sort(
+    (a, b) => caseUpdatedAtMs(b) - caseUpdatedAtMs(a)
+  );
+}
+
+/** "Updated today, 2:14 pm" → "today, 2:14 pm" for secondary lines. */
+function caseRecencyShort(c) {
+  return String(c?.when || "")
+    .replace(/^Updated\s+/i, "")
+    .replace(/^Closed\s+/i, "")
+    .trim();
+}
+
+function caseLinkEvidence() {
+  const orderCases = casesByRecency(openCasesForOrder(order.id));
+  if (orderCases.length) {
+    return {
+      level: "order",
+      cases: orderCases,
+      primary: orderCases[0],
+      count: orderCases.length,
+    };
   }
-  return `<button type="button" class="btn btn-md btn-primary" data-action="create-case">Create case</button>`;
+  const recentOpen = casesByRecency(linkableCases());
+  if (recentOpen.length) {
+    return {
+      level: "recent",
+      cases: recentOpen,
+      primary: recentOpen[0],
+      count: recentOpen.length,
+    };
+  }
+  return { level: "none", cases: [], primary: null, count: 0 };
+}
+
+function openCaseReviewDrawer() {
+  state.actionsMenuOpen = false;
+  state.createCaseDuplicatePrompt = false;
+  state.customerDrawer = "link-case";
+}
+
+/**
+ * Significant-delay resolutions Guide can facilitate:
+ * - Refund lost shipment (when merchandise eligible)
+ * - Update case (continue managing — not “investigate”)
+ */
+function trackSignificantDelayActionsHtml(ship) {
+  const shipId = ship?.id || "";
+  const buttons = [];
+  if (ship && refundEligibleInShipment(ship).some((e) => e.refundable)) {
+    buttons.push(`
+      <button
+        type="button"
+        class="btn btn-md btn-primary"
+        data-action="refund-shipment"
+        data-ship="${shipId}"
+        data-reason="Item not received"
+      >Refund lost shipment</button>`);
+  }
+  buttons.push(`
+    <button
+      type="button"
+      class="btn btn-md ${buttons.length ? "btn-secondary" : "btn-primary"}"
+      data-action="update-case"
+      data-ship="${shipId}"
+    >Update case</button>`);
+  return `<div class="track-actions">${buttons.join("")}</div>`;
 }
 
 function linkServicingCase(caseId) {
@@ -1228,6 +1394,8 @@ function clearLinkedCase() {
   state.linkedCaseSnapshot = null;
   state.enteredFromCaseId = null;
   state.unlinkConfirm = false;
+  state.caseNoteOpen = false;
+  state.caseNoteText = "";
 }
 
 let nextCreatedCaseSeq = 124001;
@@ -1239,20 +1407,65 @@ let nextCreatedCaseSeq = 124001;
 function ensureServicingCase({ topic = "General" } = {}) {
   const existing = linkedCase();
   if (existing) return existing;
+  return createAndLinkCase({ topic });
+}
+
+/**
+ * Mint a case for this interaction.
+ * Follow-up → becomes Current Case (open + linked).
+ * Resolved → created closed; recorded but not left as Current Case.
+ */
+function createAndLinkCase({
+  topic = "General",
+  summary = "",
+  notes = "",
+  scope = "order",
+  outcome = "follow-up",
+  relatedLineIds = [],
+  relatedKeys = [],
+  linkAsCurrent = true,
+} = {}) {
   const newId = String(nextCreatedCaseSeq++);
-  state.linkedCaseId = newId;
-  state.linkedCaseSnapshot = {
+  const resolved = outcome === "resolved";
+  const snapshot = {
     id: newId,
-    state: "Open",
+    state: resolved ? "Closed" : "Open",
     topic,
+    summary: summary || "",
+    notes: notes || "",
+    scope,
+    outcome: resolved ? "resolved" : "follow-up",
+    relatedLineIds: relatedLineIds || [],
+    relatedKeys: relatedKeys || [],
+    source: "Guide",
     when: "Updated just now",
     opened: "Opened today",
-    open: true,
-    linkable: true,
+    open: !resolved,
+    linkable: !resolved,
     orderId: order.id,
   };
-  console.info("[analytics] create_case_and_link", newId, topic);
-  return state.linkedCaseSnapshot;
+
+  if (resolved || !linkAsCurrent) {
+    state.lastClosedCase = snapshot;
+    /** Closed / recorded — do not leave as active Current Case. */
+    if (state.linkedCaseId === newId) {
+      state.linkedCaseId = null;
+      state.linkedCaseSnapshot = null;
+    }
+  } else {
+    state.linkedCaseId = newId;
+    state.linkedCaseSnapshot = snapshot;
+    state.lastClosedCase = null;
+  }
+
+  console.info("[analytics] create_case_and_link", newId, topic, {
+    summary,
+    scope,
+    outcome: snapshot.outcome,
+    relatedLineIds,
+    relatedKeys,
+  });
+  return snapshot;
 }
 
 function unlinkConfirmDialog() {
@@ -1263,7 +1476,7 @@ function unlinkConfirmDialog() {
     <div class="leave-confirm" role="presentation">
       <div class="leave-confirm-card" role="alertdialog" aria-labelledby="unlink-confirm-title" aria-describedby="unlink-confirm-desc">
         <h2 id="unlink-confirm-title">Unlink Case #${linked.id}?</h2>
-        <p id="unlink-confirm-desc">Future servicing actions won't be added to this case. If you complete an action without linking another case, Guide will create a new case.</p>
+        <p id="unlink-confirm-desc">This interaction will no longer be associated with this case. Completing a refund or cancel later can create a new case if needed.</p>
         <div class="leave-confirm-actions">
           <button type="button" class="btn btn-secondary" data-action="unlink-confirm-keep">Keep linked</button>
           <button type="button" class="btn btn-primary" data-action="unlink-confirm-unlink">Unlink case</button>
@@ -1273,10 +1486,95 @@ function unlinkConfirmDialog() {
 }
 
 /**
- * Compact case cue on action workflows — same pattern as the order header.
- * Consequence lives in a tooltip; Link/Switch open the association drawer.
+ * Soft duplicate-prevention when Create case is chosen and this order
+ * already has an open case. Surfaces evidence; agent decides.
  */
-function workflowCaseCueHtml({ actionLabel = "action" } = {}) {
+function createCaseDuplicateDialog() {
+  if (!state.createCaseDuplicatePrompt) return "";
+  const evidence = caseLinkEvidence();
+  if (evidence.level !== "order" || !evidence.primary) return "";
+  const c = evidence.primary;
+  return `
+    <div class="leave-confirm" role="presentation">
+      <div
+        class="leave-confirm-card create-case-dup-card"
+        role="dialog"
+        aria-labelledby="create-case-dup-title"
+        aria-describedby="create-case-dup-desc"
+      >
+        <h2 id="create-case-dup-title">An open case already exists for this order</h2>
+        <div class="create-case-dup-case" id="create-case-dup-desc">
+          <p class="create-case-dup-id">Case #${c.id}</p>
+          <p class="create-case-dup-meta">${c.topic} · ${c.state}</p>
+          ${c.when ? `<p class="create-case-dup-when">${c.when}</p>` : ""}
+        </div>
+        <div class="leave-confirm-actions create-case-dup-actions">
+          <button type="button" class="btn btn-primary" data-action="create-case-dup-review">View / link this case</button>
+          <button type="button" class="btn btn-secondary" data-action="create-case-dup-proceed">Create a new case instead</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+/**
+ * Update case — continue managing on the linked case (notes now; tasks later).
+ * Not an order action and not a carrier investigation.
+ */
+function caseNoteDialog() {
+  if (!state.caseNoteOpen) return "";
+  const linked = linkedCase();
+  if (!linked) return "";
+  const text = state.caseNoteText || "";
+  const canSave = text.trim().length > 0;
+  return `
+    <div class="leave-confirm" role="presentation">
+      <div
+        class="leave-confirm-card case-note-card"
+        role="dialog"
+        aria-labelledby="case-note-title"
+        aria-describedby="case-note-desc"
+      >
+        <h2 id="case-note-title">Update Case #${linked.id}</h2>
+        <p id="case-note-desc">
+          Contact and Order ${order.id} are already associated with this case.
+        </p>
+        <label class="case-note-label" for="case-note-text">Notes</label>
+        <textarea
+          id="case-note-text"
+          class="case-note-input"
+          rows="4"
+          data-action="case-note-input"
+          placeholder="Add what happened or what needs to happen next…"
+        >${escapeHtml(text)}</textarea>
+        <div class="leave-confirm-actions">
+          <button type="button" class="btn btn-secondary" data-action="case-note-cancel">Cancel</button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-action="case-note-submit"
+            ${canSave ? "" : "disabled"}
+          >Update case</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Compact case cue on Refund/Cancel/Report damage.
+ * Linked: association only. Unlinked: optional create-note (prefer Review for consequence).
+ */
+function workflowCaseCueHtml({
+  linkLabel = "Link case",
+  showCreateNote = true,
+} = {}) {
   const linked = linkedCase();
   if (linked) {
     return `
@@ -1293,23 +1591,80 @@ function workflowCaseCueHtml({ actionLabel = "action" } = {}) {
         <button type="button" class="workflow-case-cue-action" data-action="change-linked-case">Switch</button>
       </p>`;
   }
-  const unlinkedTip = `This ${actionLabel} will create a new case unless you link an existing one.`;
   return `
     <p class="workflow-case-cue is-unlinked">
       <span class="workflow-case-cue-icon" aria-hidden="true">${icons.caseLink}</span>
-      <span class="workflow-case-cue-ref" title="${unlinkedTip}">No case linked</span>
+      <span class="workflow-case-cue-ref">No case linked</span>
       <span class="workflow-case-cue-sep" aria-hidden="true">·</span>
-      <button type="button" class="workflow-case-cue-action" data-action="open-link-case">Link case</button>
+      <button type="button" class="workflow-case-cue-action" data-action="open-link-case">${linkLabel}</button>
+      ${
+        showCreateNote
+          ? `<span class="workflow-case-cue-sep" aria-hidden="true">·</span>
+      <span class="workflow-case-cue-note">A case will be created on submission.</span>`
+          : ""
+      }
     </p>`;
 }
 
-function workflowHead({ title, lead, actionLabel = "action" }) {
+/**
+ * Case destination in Review — immediately before the irreversible CTA.
+ * Reflects current link state; Link / Switch as escape hatch (no new/existing radio).
+ */
+function reviewCaseDestinationHtml() {
+  const linked = linkedCase();
+  if (linked) {
+    return `
+      <div class="totals-row review-case-destination">
+        <span>Case</span>
+        <span class="review-case-destination-value">
+          <span class="review-case-destination-primary">
+            <span class="review-case-destination-icon" aria-hidden="true">${icons.caseLink}</span>
+            <button
+              type="button"
+              class="review-case-destination-ref"
+              data-action="view-case"
+              data-case="${linked.id}"
+              title="View case #${linked.id}"
+            >Case #${linked.id}</button>
+          </span>
+          <span class="review-case-destination-sep" aria-hidden="true">·</span>
+          <button type="button" class="review-case-destination-action" data-action="change-linked-case">Switch</button>
+        </span>
+      </div>`;
+  }
+  return `
+    <div class="totals-row review-case-destination">
+      <span>Case</span>
+      <span class="review-case-destination-value">
+        <span class="review-case-destination-primary">
+          <span class="review-case-destination-icon" aria-hidden="true">${icons.caseLink}</span>
+          <span class="review-case-destination-label">New case will be created</span>
+        </span>
+        <span class="review-case-destination-sep" aria-hidden="true">·</span>
+        <button type="button" class="review-case-destination-action" data-action="open-link-case">Link existing</button>
+      </span>
+    </div>`;
+}
+
+/**
+ * Shared action-screen chrome: back → title → case cue.
+ * No lead paragraphs — the UI beneath explains itself.
+ */
+function workflowHead({
+  title,
+  showCaseCue = true,
+  linkLabel = "Link case",
+  showCreateNote = true,
+} = {}) {
   return `
     <header class="workflow-head">
       <button type="button" class="workflow-back" data-action="back-to-order">← Back to order</button>
       <h1 class="workflow-title">${title}</h1>
-      ${workflowCaseCueHtml({ actionLabel })}
-      ${lead ? `<p class="workflow-lead">${lead}</p>` : ""}
+      ${
+        showCaseCue
+          ? workflowCaseCueHtml({ linkLabel, showCreateNote })
+          : ""
+      }
     </header>`;
 }
 
@@ -1325,22 +1680,35 @@ function resetCancelSelection() {
   state.cancel = {
     intent: null,
     reason: "",
+    notes: "",
     items: {},
+    step: "build",
   };
 }
 
 function cancelHasDraft() {
   if (state.cancel.intent) return true;
   if (state.cancel.reason) return true;
+  if (String(state.cancel.notes || "").trim()) return true;
   if (Object.keys(state.cancel.items || {}).length) return true;
+  if (state.cancel.step === "review") return true;
   return false;
 }
 
-function enterRefund({ preselectShipping = false } = {}) {
+function enterRefund({
+  preselectShipping = false,
+  preselectShipId = null,
+  defaultReason = "",
+} = {}) {
   const from = state.view === "track" || state.view === "detail" ? state.view : state.originView;
   state.originView = from === "track" ? "track" : "detail";
   resetRefundSelection();
+  if (preselectShipId) {
+    const found = findShipmentById(preselectShipId);
+    if (found) selectAllInShipment(found.ship, true);
+  }
   if (preselectShipping) setShippingSelected(true);
+  if (defaultReason) state.refund.defaultReason = defaultReason;
   state.leaveConfirm = null;
   state.actionsMenuOpen = false;
   state.view = "refund";
@@ -1355,11 +1723,138 @@ function enterCancel() {
   state.view = "cancel";
 }
 
+function resetCreateCaseDraft() {
+  state.createCase = {
+    type: "delivery",
+    summary: CASE_TYPE_SUMMARY_HINTS.delivery,
+    notes: "",
+    scope: "order",
+    outcome: "resolved",
+    items: {},
+  };
+}
+
+function createCaseHasDraft() {
+  const draft = state.createCase || {};
+  const hint = CASE_TYPE_SUMMARY_HINTS[draft.type] || "";
+  if (draft.notes && draft.notes.trim()) return true;
+  if (draft.summary && draft.summary.trim() && draft.summary.trim() !== hint) {
+    return true;
+  }
+  if (draft.scope === "specific") return true;
+  if (draft.outcome && draft.outcome !== "resolved") return true;
+  if (Object.keys(draft.items || {}).length) return true;
+  if (draft.type && draft.type !== "delivery") return true;
+  return false;
+}
+
+function createCaseCanSubmit() {
+  const draft = state.createCase || {};
+  if (!String(draft.summary || "").trim()) return false;
+  if (!String(draft.notes || "").trim()) return false;
+  if (draft.outcome !== "resolved" && draft.outcome !== "follow-up") return false;
+  if (draft.scope === "order") return true;
+  if (draft.scope === "specific") {
+    return Object.keys(draft.items || {}).length > 0;
+  }
+  return false;
+}
+
+function createCaseSubmitLabel(draft = state.createCase) {
+  return draft?.outcome === "follow-up" ? "Create case" : "Create & close case";
+}
+
+function setCreateCaseScope(scope) {
+  if (scope !== "order" && scope !== "specific") return;
+  state.createCase.scope = scope;
+  if (scope === "order") {
+    state.createCase.items = {};
+  }
+}
+
+function enterCreateCase({
+  type = "delivery",
+  summary = "",
+  notes = "",
+  scope = "order",
+  preselectShipId = "",
+} = {}) {
+  const from =
+    state.view === "track" || state.view === "detail"
+      ? state.view
+      : state.originView;
+  state.originView = from === "track" ? "track" : "detail";
+  resetCreateCaseDraft();
+  if (type && CASE_TYPES.some((t) => t.id === type)) {
+    state.createCase.type = type;
+  }
+  state.createCase.summary =
+    summary ||
+    CASE_TYPE_SUMMARY_HINTS[state.createCase.type] ||
+    CASE_TYPE_SUMMARY_HINTS.delivery;
+  if (notes) state.createCase.notes = notes;
+  if (preselectShipId) {
+    const found = findShipmentById(preselectShipId);
+    if (found) {
+      state.createCase.scope = "specific";
+      setCreateCaseShipmentSelected(found.ship, true);
+    }
+  } else if (scope === "specific" || scope === "order") {
+    state.createCase.scope = scope;
+  }
+  state.leaveConfirm = null;
+  state.actionsMenuOpen = false;
+  state.caseNoteOpen = false;
+  state.customerDrawer = null;
+  state.createCaseDuplicatePrompt = false;
+  state.createCaseResult = null;
+  state.view = "create-case";
+}
+
+function openUpdateCaseComposer({ seed = "" } = {}) {
+  if (!linkedCase()) return false;
+  state.actionsMenuOpen = false;
+  state.caseNoteOpen = true;
+  state.caseNoteText = seed || "";
+  return true;
+}
+
 function leaveWorkflow(targetView, { force = false } = {}) {
   const target = targetView || state.originView || "detail";
-  const workflow = state.view === "cancel" ? "cancel" : state.view === "refund" ? "refund" : null;
+  if (state.view === "create-case-done") {
+    state.createCaseResult = null;
+    state.leaveConfirm = null;
+    state.actionsMenuOpen = false;
+    state.view = target;
+    return true;
+  }
+  if (state.view === "damage" && state.damage?.step === "done") {
+    damageApi.resetDamageDraft();
+    state.leaveConfirm = null;
+    state.actionsMenuOpen = false;
+    state.view = target;
+    return true;
+  }
+  const workflow =
+    state.view === "cancel"
+      ? "cancel"
+      : state.view === "refund"
+        ? "refund"
+        : state.view === "create-case"
+          ? "create-case"
+          : state.view === "damage"
+            ? "damage"
+            : null;
   const hasDraft =
-    workflow === "cancel" ? cancelHasDraft() : workflow === "refund" ? refundHasDraft() : false;
+    workflow === "cancel"
+      ? cancelHasDraft()
+      : workflow === "refund"
+        ? refundHasDraft()
+        : workflow === "create-case"
+          ? createCaseHasDraft()
+          : workflow === "damage"
+            ? damageApi.damageHasDraft()
+            : false;
   if (!force && hasDraft) {
     state.leaveConfirm = { targetView: target, workflow };
     render();
@@ -1367,6 +1862,8 @@ function leaveWorkflow(targetView, { force = false } = {}) {
   }
   if (workflow === "refund") resetRefundSelection();
   if (workflow === "cancel") resetCancelSelection();
+  if (workflow === "create-case") resetCreateCaseDraft();
+  if (workflow === "damage") damageApi.resetDamageDraft();
   state.leaveConfirm = null;
   state.actionsMenuOpen = false;
   state.view = target;
@@ -1381,7 +1878,14 @@ function leaveRefund(targetView, opts) {
 function leaveConfirmDialog() {
   if (!state.leaveConfirm) return "";
   const workflow = state.leaveConfirm.workflow || "refund";
-  const label = workflow === "cancel" ? "cancellation" : "refund";
+  const label =
+    workflow === "cancel"
+      ? "cancellation"
+      : workflow === "create-case"
+        ? "case creation"
+        : workflow === "damage"
+          ? "damage report"
+          : "refund";
   return `
     <div class="leave-confirm" role="presentation">
       <div class="leave-confirm-card" role="alertdialog" aria-labelledby="leave-confirm-title" aria-describedby="leave-confirm-desc">
@@ -1396,37 +1900,128 @@ function leaveConfirmDialog() {
 }
 
 /**
- * Prototype cancellation capability matrix.
- * Evaluates full-order vs line cancellation independently (CNC Packed etc.).
- * Mirakl sellers are never cancellable in Guide.
+ * CFC / ACFS — Home Delivery cancellation blocked from these locations.
+ * Confluence: Search Order Tool - Cancel Order Kmart AU.
  */
-function shipmentCancelEligibility(ship, seller) {
-  const channel =
-    seller.kind === "marketplace" || seller.kind === "target" ? "mirakl" : "guide";
-  const status = String(ship.status || "").toLowerCase();
-  const units = shipmentUnitCount(ship);
-  const base = { ship, seller, units, channel, status: ship.status };
+const CANCEL_EXCLUDED_HD_LOCATIONS = new Set([
+  "1190",
+  "1194",
+  "1294",
+  "1295",
+  "1296",
+  "1297",
+]);
 
-  if (channel === "mirakl") {
+function cancelStatusRaw(ship, pkg, alloc = null) {
+  return String(
+    alloc?.fulfillmentStatus || pkg?.status || ship?.status || ""
+  ).trim();
+}
+
+function normalizeCancelStatus(raw) {
+  return String(raw || "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Line-level cancellation eligibility from the Confluence matrix.
+ * Guide interprets rules; agents see plain-language outcomes on each line.
+ */
+function lineCancelEligibility(seller, ship, pkg, alloc) {
+  const line = lines[alloc.lineId];
+  const units = Number(alloc.qtyInPackage) || 0;
+  const statusRaw = cancelStatusRaw(ship, pkg, alloc);
+  const status = normalizeCancelStatus(statusRaw);
+  const statusLabel = statusRaw || ship.status || "Unknown";
+  const key = allocKey(pkg.id, alloc.lineId);
+  const base = {
+    seller,
+    ship,
+    pkg,
+    alloc,
+    line,
+    key,
+    units,
+    statusLabel,
+  };
+
+  if (!line || units <= 0) {
     return {
       ...base,
+      channel: "guide",
       fullOrder: false,
       lineItems: false,
-      lineUnavailableReason:
-        "Cancellation for this seller must be managed in Mirakl.",
+      tier: "blocked",
+      title: "Can't be cancelled",
+      detail: "",
     };
   }
 
-  if (
-    (status.includes("deliver") && !status.includes("out for")) ||
-    status.includes("collected") ||
-    status.includes("complete")
-  ) {
+  /** Marketplace only — Target uses the same Guide status matrix as Kmart. */
+  if (seller.kind === "marketplace") {
     return {
       ...base,
+      channel: "mirakl",
       fullOrder: false,
       lineItems: false,
-      lineUnavailableReason: "These items have already been fulfilled.",
+      tier: "mirakl",
+      title: "Manage in Mirakl",
+      detail: "Marketplace items aren't managed in this cancellation.",
+    };
+  }
+
+  const channel = "guide";
+  const isCnc = fulfilmentKind(seller.delivery) === "CNC";
+  const storeId = String(ship.store || seller.collectionStore?.id || "").trim();
+  const cfcBlocked =
+    !isCnc && storeId && CANCEL_EXCLUDED_HD_LOCATIONS.has(storeId);
+
+  if (status.includes("cancel") || line.isCancelled || alloc.isCancelled) {
+    return {
+      ...base,
+      channel,
+      fullOrder: false,
+      lineItems: false,
+      tier: "blocked",
+      title: "Can't be cancelled",
+      detail: "This item is already cancelled.",
+    };
+  }
+
+  if (cfcBlocked) {
+    return {
+      ...base,
+      channel,
+      fullOrder: false,
+      lineItems: false,
+      tier: "blocked",
+      title: "Can't be cancelled",
+      detail: "This fulfilment location can't be cancelled in Guide (CFC/ACFS).",
+    };
+  }
+
+  const isDeliveredOrCollected =
+    (status.includes("deliver") && !status.includes("out for")) ||
+    status.includes("collected") ||
+    status === "fulfilled" ||
+    status.includes("complete");
+
+  if (isDeliveredOrCollected) {
+    return {
+      ...base,
+      channel,
+      fullOrder: false,
+      lineItems: false,
+      tier: "blocked",
+      title: isCnc
+        ? "Already collected — can't be cancelled"
+        : "Already delivered — can't be cancelled",
+      detail: isCnc
+        ? "This item has already been collected."
+        : "This item has already been delivered.",
     };
   }
 
@@ -1437,75 +2032,196 @@ function shipmentCancelEligibility(ship, seller) {
   ) {
     return {
       ...base,
+      channel,
       fullOrder: false,
       lineItems: false,
-      lineUnavailableReason: "These items have already shipped.",
+      tier: "blocked",
+      title: "Already shipped — can't be cancelled",
+      detail: "This item has already been dispatched.",
     };
   }
 
-  /** CNC mid/late fulfilment: full cancel can remain; line cancel closes. */
-  const cncLineLocked =
-    fulfilmentKind(seller.delivery) === "CNC" &&
-    (status.includes("pick") ||
-      status.includes("process") ||
-      status.includes("pack") ||
-      status.includes("ready for collection"));
+  /** Early statuses — both Cancel Order and Cancel Line. */
+  const earlyBoth =
+    !status ||
+    status.includes("open") ||
+    status.includes("created") ||
+    status.includes("back order") ||
+    status.includes("partially allocated") ||
+    status === "allocated" ||
+    status.includes("released");
 
-  if (cncLineLocked) {
+  if (earlyBoth) {
     return {
       ...base,
+      channel,
       fullOrder: true,
-      lineItems: false,
-      lineUnavailableReason:
-        "Individual items can no longer be cancelled once this Click & Collect order has been packed. You can still cancel the entire remaining order.",
+      lineItems: true,
+      tier: "eligible",
+      title: "Eligible to cancel",
+      detail: "",
     };
+  }
+
+  if (isCnc) {
+    /** CNC: full order remains through Ready for Collection; line cancel stops at picking. */
+    const cncFullOnly =
+      status.includes("pick") ||
+      status.includes("process") ||
+      status.includes("pack") ||
+      status.includes("ready for collection") ||
+      status.includes("ready for packing") ||
+      status.includes("in transit");
+    if (cncFullOnly) {
+      return {
+        ...base,
+        channel,
+        fullOrder: true,
+        lineItems: false,
+        tier: "full-only",
+        title: "Full order cancellation only",
+        detail:
+          "Individual items can't be removed once picking has started.",
+      };
+    }
+  } else {
+    /** HD: Packed+ blocks both; Ready for Picking / Picked = full only. */
+    if (status.includes("pack")) {
+      return {
+        ...base,
+        channel,
+        fullOrder: false,
+        lineItems: false,
+        tier: "blocked",
+        title: "Can't be cancelled",
+        detail: "This item has already been packed.",
+      };
+    }
+    const hdFullOnly =
+      status.includes("ready for picking") ||
+      status.includes("picking in progress") ||
+      status === "picked" ||
+      status.includes("in process");
+    if (hdFullOnly) {
+      return {
+        ...base,
+        channel,
+        fullOrder: true,
+        lineItems: false,
+        tier: "full-only",
+        title: "Full order cancellation only",
+        detail: "This item has started picking.",
+      };
+    }
   }
 
   return {
     ...base,
+    channel,
     fullOrder: true,
-    lineItems: true,
-    lineUnavailableReason: "",
+    lineItems: false,
+    tier: "full-only",
+    title: "Full order cancellation only",
+    detail: "Individual cancellation isn't available for this status.",
   };
 }
 
-function cancelCapability() {
-  const rows = [];
+function cancelLineEntries() {
+  const entries = [];
   for (const seller of sellers) {
     for (const ship of seller.shipments) {
-      rows.push(shipmentCancelEligibility(ship, seller));
+      for (const pkg of ship.packages || []) {
+        for (const alloc of pkg.allocations || []) {
+          entries.push(lineCancelEligibility(seller, ship, pkg, alloc));
+        }
+      }
     }
   }
+  return entries;
+}
 
-  const guideFull = rows.filter((r) => r.channel === "guide" && r.fullOrder);
-  const guideLines = rows.filter((r) => r.channel === "guide" && r.lineItems);
+/**
+ * Full order = every applicable Guide line can participate in full-order cancel,
+ * and there are no Marketplace lines. Selecting “all remaining eligible”
+ * is still Specific items when anything in the order is excluded.
+ *
+ * entry:
+ *   choose — full + line available → ask Entire / Specific
+ *   entire — only full available → full-order path directly
+ *   lines  — full unavailable, some lines cancellable → specific-items path
+ *   none   — nothing cancellable
+ */
+function cancelCapability() {
+  const rows = cancelLineEntries();
+  const guide = rows.filter((r) => r.channel === "guide" && r.units > 0);
   const mirakl = rows.filter((r) => r.channel === "mirakl" && r.units > 0);
-  const lineBlocked = rows.find(
-    (r) => r.channel === "guide" && r.fullOrder && !r.lineItems && r.lineUnavailableReason
-  );
+  const hasMirakl = mirakl.length > 0;
 
-  const fullUnits = guideFull.reduce((n, r) => n + r.units, 0);
-  const lineUnits = guideLines.reduce((n, r) => n + r.units, 0);
+  const applicableGuide = guide.filter((r) => {
+    const s = normalizeCancelStatus(r.statusLabel);
+    if (s.includes("cancel")) return false;
+    if (r.line?.isCancelled || r.alloc?.isCancelled) return false;
+    return true;
+  });
+
+  const fullRows = applicableGuide.filter((r) => r.fullOrder);
+  const fullUnits = fullRows.reduce((n, r) => n + r.units, 0);
+  const guideUnits = applicableGuide.reduce((n, r) => n + r.units, 0);
+
+  /**
+   * Genuine full-order eligibility: every applicable Guide line can join,
+   * and Marketplace is absent (those lines never use Kmart Cancel Order).
+   */
+  const fullAvailable =
+    !hasMirakl &&
+    applicableGuide.length > 0 &&
+    applicableGuide.every((r) => r.fullOrder) &&
+    fullUnits > 0;
+
+  const nativeLineRows = applicableGuide.filter((r) => r.lineItems);
+  /**
+   * Mixed order: Marketplace blocks Entire order, but Kmart lines may still
+   * be cancellable together (e.g. CNC Ready for collection). Surface those
+   * as Specific items — not as “full order”.
+   */
+  const kmartRemainderOnly =
+    hasMirakl &&
+    applicableGuide.length > 0 &&
+    applicableGuide.every((r) => r.fullOrder);
+
+  const lineRows = (
+    kmartRemainderOnly
+      ? fullRows.map((r) => ({ ...r, lineItems: true }))
+      : nativeLineRows
+  );
+  const lineUnits = lineRows.reduce((n, r) => n + r.units, 0);
+  const lineAvailable = lineUnits > 0;
+
+  let entry = "none";
+  if (fullAvailable && nativeLineRows.length > 0) entry = "choose";
+  else if (fullAvailable && nativeLineRows.length === 0) entry = "entire";
+  else if (!fullAvailable && lineAvailable) entry = "lines";
 
   return {
     rows,
+    guide: applicableGuide,
+    /** All Guide rows including blocked — for hierarchy display context. */
+    guideAll: guide,
     fullOrder: {
-      available: fullUnits > 0,
+      available: fullAvailable,
       units: fullUnits,
-      rows: guideFull,
+      rows: fullRows,
     },
     lineItems: {
-      available: lineUnits > 0,
+      available: lineAvailable,
       units: lineUnits,
-      rows: guideLines,
-      unavailableReason: lineUnits
-        ? ""
-        : lineBlocked?.lineUnavailableReason ||
-          (fullUnits
-            ? "Individual item cancellation isn't available for this order right now."
-            : "No items can be cancelled in Guide for this order."),
+      rows: lineRows,
     },
     mirakl,
+    hasMirakl,
+    kmartRemainderOnly,
+    guideUnits,
+    entry,
   };
 }
 
@@ -1517,362 +2233,1107 @@ function cancelReasonOptionsHtml(selected) {
   return blank + opts;
 }
 
-function cancelEntireSummaryHtml(cap) {
-  if (!cap.fullOrder.available) {
-    return `
-      <section class="card card-pad cancel-panel">
-        <h2>Cancel entire order</h2>
-        <p class="help">No remaining items can be cancelled in Guide for this order.</p>
-      </section>`;
-  }
+function cancelSelectedLineUnits() {
+  return Object.values(state.cancel.items || {}).reduce(
+    (n, q) => n + (Number(q) || 0),
+    0
+  );
+}
 
-  const bySeller = new Map();
-  for (const row of cap.fullOrder.rows) {
-    const id = row.seller.id;
-    if (!bySeller.has(id)) {
-      bySeller.set(id, { seller: row.seller, rows: [], units: 0 });
+function cancelBuildReady(cap = cancelCapability()) {
+  const intent = state.cancel.intent;
+  if (!intent) return false;
+  if (!state.cancel.reason) return false;
+  if (!String(state.cancel.notes || "").trim()) return false;
+  if (intent === "entire") return cap.fullOrder.available;
+  return cancelSelectedLineUnits() > 0;
+}
+
+function cancelSubmitLabel(cap = cancelCapability()) {
+  const n =
+    state.cancel.intent === "entire"
+      ? cap.fullOrder.units
+      : cancelSelectedLineUnits();
+  if (n <= 0) return "Cancel items";
+  return n === 1 ? "Cancel 1 item" : `Cancel ${n} items`;
+}
+
+function setCancelItemQty(key, qty, maxQty) {
+  const next = Math.max(0, Math.min(Number(qty) || 0, maxQty));
+  if (next <= 0) delete state.cancel.items[key];
+  else state.cancel.items[key] = next;
+}
+
+function preselectAllEligibleCancelLines(cap) {
+  state.cancel.items = {};
+  for (const row of cap.lineItems.rows) {
+    state.cancel.items[row.key] = row.units;
+  }
+}
+
+/**
+ * Auto-enter the only valid path when radios aren't needed.
+ * Specific-items path starts with nothing selected — agent chooses.
+ */
+function syncCancelEntryIntent(cap) {
+  if (state.cancel.step !== "build") return;
+  if (state.cancel.intent) return;
+  if (cap.entry === "entire") {
+    state.cancel.intent = "entire";
+    state.cancel.items = {};
+  } else if (cap.entry === "lines") {
+    state.cancel.intent = "lines";
+    state.cancel.items = {};
+  }
+}
+
+function cancelSellerMetaLine(seller, rows) {
+  const units = rows.reduce((n, r) => n + r.units, 0);
+  const parts = [
+    `${units} unit${units === 1 ? "" : "s"}`,
+    fulfilmentLabel(seller.delivery),
+  ];
+  const storeBit = sellerStoreMetaBit(seller).replace(/^ · /, "");
+  if (storeBit) parts.push(storeBit);
+  return parts.join(" · ");
+}
+
+function cancelLinesUnavailableReason(cap) {
+  const fullOnly = (cap.guideAll || cap.guide).filter((r) => r.tier === "full-only");
+  if (fullOnly.length) {
+    const ready = fullOnly.find((r) =>
+      normalizeCancelStatus(r.statusLabel).includes("ready for collection")
+    );
+    if (ready) {
+      return "Individual item cancellation is no longer available because these items are ready for collection.";
     }
-    const g = bySeller.get(id);
-    g.rows.push(row);
-    g.units += row.units;
+    const picking = fullOnly.find((r) =>
+      /pick|process|pack/i.test(normalizeCancelStatus(r.statusLabel))
+    );
+    if (picking?.detail) {
+      return `Individual item cancellation is no longer available because picking has progressed.`;
+    }
+    return (
+      fullOnly[0].detail ||
+      "Individual item cancellation is no longer available at the current fulfilment status."
+    );
   }
+  return "Individual item cancellation isn't available for this order.";
+}
 
-  const sellerBlocks = [...bySeller.values()]
-    .map(({ seller, rows, units }) => {
-      const linesHtml = rows
-        .flatMap((row) =>
-          row.ship.packages.flatMap((pkg) =>
-            pkg.allocations.map((alloc) => {
-              const line = lines[alloc.lineId];
-              if (!line) return "";
-              return `
-                <div class="cancel-summary-item">
-                  <div class="item-cell">
-                    ${productThumbHtml(line)}
-                    <div class="pkg-item-body">
-                      <div class="item-name">${line.name} <span class="item-qty-inline">×${alloc.qtyInPackage}</span></div>
-                      <div class="item-meta-line">SKU ${line.sku}</div>
-                    </div>
-                  </div>
-                  <div class="refund-item-amount">${money(line.price * alloc.qtyInPackage)}</div>
-                </div>`;
-            })
-          )
-        )
-        .join("");
+function cancelGroupByShip(rows) {
+  const byShip = new Map();
+  for (const row of rows) {
+    if (!byShip.has(row.ship.id)) {
+      byShip.set(row.ship.id, { ship: row.ship, entries: [] });
+    }
+    byShip.get(row.ship.id).entries.push(row);
+  }
+  return [...byShip.values()];
+}
 
-      const store = resolveCollectionStore(seller, rows[0]?.ship);
-      const fulfilment = fulfilmentLabel(seller.delivery);
-      const storeBit = store
-        ? ` · ${collectionStoreCompactLabel(store)}`
-        : "";
+/**
+ * Resolved disable copy for the action selector — not the raw matrix tier.
+ * Omits “full order only” when Entire order isn't available on this order.
+ */
+function cancelDisabledReason(entry, cap) {
+  if (!entry || entry.tier === "mirakl") return "";
+  if (entry.tier === "blocked") {
+    return entry.title || "Can't be cancelled";
+  }
+  if (entry.tier === "full-only") {
+    if (cap.fullOrder.available) {
+      return "Available with entire order only";
+    }
+    const s = normalizeCancelStatus(entry.statusLabel);
+    if (s.includes("ready for collection")) {
+      return "Ready for collection — can't cancel individually";
+    }
+    if (/pick|process|pack/.test(s)) {
+      return "Picking in progress — can't cancel individually";
+    }
+    return "Can't cancel individually";
+  }
+  return entry.title || "Can't be cancelled";
+}
 
-      return `
-        <div class="cancel-summary-seller">
-          <div class="cancel-summary-seller-head">
-            <strong>${seller.name}</strong>
-            <span>${units} unit${units === 1 ? "" : "s"} · ${fulfilment}${storeBit}</span>
+function cancelLineIsSelectable(entry, cap, selectMode) {
+  if (!selectMode) return false;
+  if (!entry || entry.channel === "mirakl") return false;
+  return (cap.lineItems.rows || []).some((r) => r.key === entry.key);
+}
+
+/** Shipment-header eligibility — reason for a fully ineligible shipment. */
+function cancelShipmentEligibilityCue(entries, cap, selectMode) {
+  if (!selectMode || !entries.length) return "";
+  if (entries.some((e) => cancelLineIsSelectable(e, cap, selectMode))) {
+    return "";
+  }
+  if (entries.every((e) => e.tier === "mirakl")) return "";
+  const reasons = [
+    ...new Set(
+      entries.map((e) => cancelDisabledReason(e, cap)).filter(Boolean)
+    ),
+  ];
+  return reasons[0] || "";
+}
+
+/** Prefer cancel-matrix status over OMS ship status on the selector. */
+function cancelShipmentStatusLabel(ship, entries) {
+  const labels = [
+    ...new Set(entries.map((e) => e.statusLabel).filter(Boolean)),
+  ];
+  if (labels.length === 1) return labels[0];
+  return ship.status || labels[0] || "Unknown";
+}
+
+function cancelSummaryItemHtml(row) {
+  if (!row.line) return "";
+  return `
+    <div class="refund-item cancel-action-item is-review">
+      <div class="refund-item-main">
+        <span class="refund-check-spacer" aria-hidden="true"></span>
+        <div class="item-cell">
+          ${productThumbHtml(row.line)}
+          <div class="pkg-item-body">
+            <div class="item-name">${row.line.name} <span class="item-qty-inline">×${row.units}</span></div>
           </div>
-          <div class="cancel-summary-items">${linesHtml}</div>
+        </div>
+        <div class="refund-item-amount">${money(row.line.price * row.units)}</div>
+      </div>
+    </div>`;
+}
+
+function cancelActionItemHtml(entry, cap, { selectMode }) {
+  if (!entry.line) return "";
+  if (!selectMode) return cancelSummaryItemHtml(entry);
+
+  const selectable = cancelLineIsSelectable(entry, cap, selectMode);
+  const selectedQty = selectable ? Number(state.cancel.items[entry.key] || 0) : 0;
+  const selected = selectedQty > 0;
+
+  return `
+    <div class="refund-item cancel-action-item${!selectable ? " is-blocked" : ""}${selected ? " is-selected" : ""}">
+      <div class="refund-item-main">
+        <input
+          class="checkbox"
+          type="checkbox"
+          ${
+            selectable
+              ? `data-action="cancel-toggle-item" data-key="${entry.key}" data-max="${entry.units}"`
+              : "disabled"
+          }
+          ${selected ? "checked" : ""}
+          aria-label="${selectable ? "Select" : "Unavailable"} ${entry.line.name}"
+        />
+        <div class="item-cell">
+          ${productThumbHtml(entry.line)}
+          <div class="pkg-item-body">
+            <div class="item-name">${entry.line.name} <span class="item-qty-inline">×${entry.units}</span></div>
+          </div>
+        </div>
+        <div class="refund-item-amount">${money(entry.line.price * entry.units)}</div>
+      </div>
+    </div>`;
+}
+
+function cancelMiraklSellerHtml(seller, rows) {
+  const items = rows
+    .map((row) => {
+      if (!row.line) return "";
+      return `
+        <div class="refund-handoff-item">
+          <div class="item-cell">
+            ${productThumbHtml(row.line, { className: "thumb refund-handoff-thumb" })}
+            <div class="pkg-item-body">
+              <div class="item-name">${row.line.name} <span class="item-qty-inline">×${row.units}</span></div>
+            </div>
+          </div>
+          <div class="refund-item-amount">${money(row.line.price * row.units)}</div>
         </div>`;
     })
     .join("");
 
-  const miraklNote = cap.mirakl.length
-    ? `<div class="cancel-scope-note">
-        <p><strong>Not included</strong> — cancellation for Marketplace / Target must be managed in Mirakl.</p>
-        <ul>
-          ${cap.mirakl
-            .map(
-              (r) =>
-                `<li>${r.seller.name}${
-                  r.seller.kind === "marketplace" ? " · Marketplace" : ""
-                } · ${r.units} unit${r.units === 1 ? "" : "s"}
-                  <button type="button" class="external-system-link" data-action="open-mirakl" data-seller="${r.seller.id}" data-channel="${r.seller.kind}">Cancel in Mirakl ↗</button>
-                </li>`
-            )
-            .join("")}
-        </ul>
-      </div>`
-    : "";
-
-  const titleUnits = cap.fullOrder.units;
-  const title =
-    cap.mirakl.length > 0
-      ? `Cancel all eligible Guide items`
-      : `Cancel entire order`;
-
   return `
-    <section class="card card-pad cancel-panel">
-      <h2>${title}</h2>
-      <p class="cancel-panel-lead">${titleUnits} remaining unit${titleUnits === 1 ? "" : "s"} will be cancelled in Guide.</p>
-      ${sellerBlocks}
-      ${miraklNote}
-      <div class="cancel-reason-field">
-        <label for="cancel-reason">Cancellation reason</label>
-        <select id="cancel-reason" class="select select-reason-default" data-action="cancel-reason">
-          ${cancelReasonOptionsHtml(state.cancel.reason)}
-        </select>
+    <section class="card seller-card seller-card-refund seller-card-handoff seller-card-cancel">
+      <div class="seller-head">
+        <div class="seller-head-main">
+          <div class="seller-title-row-inline">
+            <div class="seller-title">${seller.name}</div>
+            <span class="seller-kind-chip">Marketplace</span>
+            <button type="button" class="external-system-link" data-action="open-mirakl" data-seller="${seller.id}" data-channel="${seller.kind}">Manage in Mirakl ↗</button>
+          </div>
+          <div class="seller-meta">${cancelSellerMetaLine(seller, rows)}</div>
+        </div>
+      </div>
+      <div class="seller-body">
+        <div class="refund-handoff-items" aria-disabled="true">${items}</div>
       </div>
     </section>`;
 }
 
-function cancelLineItemRow(ship, pkg, alloc, elig) {
-  const line = lines[alloc.lineId];
-  if (!line) return "";
-  const key = allocKey(pkg.id, alloc.lineId);
-  const cancellable = !!elig.lineItems;
-  const selectedQty = Number(state.cancel.items[key] || 0);
-  const selected = selectedQty > 0;
-
-  if (!cancellable) {
-    return `
-      <div class="cancel-line-item is-unavailable">
-        <span class="refund-check-spacer" aria-hidden="true"></span>
-        <div class="item-cell">
-          ${productThumbHtml(line)}
-          <div class="pkg-item-body">
-            <div class="item-name">${line.name} <span class="item-qty-inline">×${alloc.qtyInPackage}</span></div>
-            <div class="item-meta-line">SKU ${line.sku}</div>
-          </div>
-        </div>
-        <div class="refund-item-amount">${money(line.price * alloc.qtyInPackage)}</div>
-      </div>`;
-  }
+function cancelShipmentBlockHtml(ship, seller, entries, cap, { selectMode }) {
+  const hasSelectable = entries.some((e) =>
+    cancelLineIsSelectable(e, cap, selectMode)
+  );
+  const eligCue = cancelShipmentEligibilityCue(entries, cap, selectMode);
+  const statusLabel = cancelShipmentStatusLabel(ship, entries);
+  const items = entries
+    .map((e) => cancelActionItemHtml(e, cap, { selectMode }))
+    .join("");
 
   return `
-    <div class="cancel-line-item${selected ? " is-selected" : ""}">
-      <input
-        class="checkbox"
-        type="checkbox"
-        data-action="cancel-toggle-item"
-        data-key="${key}"
-        data-max="${alloc.qtyInPackage}"
-        ${selected ? "checked" : ""}
-        aria-label="Select ${line.name}"
-      />
-      <div class="item-cell">
-        ${productThumbHtml(line)}
-        <div class="pkg-item-body">
-          <div class="item-name">${line.name} <span class="item-qty-inline">×${alloc.qtyInPackage}</span></div>
-          <div class="item-meta-line">SKU ${line.sku}</div>
+    <div class="shipment-block shipment-block-refund shipment-block-cancel${!hasSelectable && selectMode ? " is-disabled-ship" : ""}">
+      <div class="refund-ship-head">
+        <div class="refund-ship-title-row">
+          <h3>${ship.label}</h3>
+          ${statusBadge(statusLabel)}
+        </div>
+        ${
+          eligCue
+            ? `<p class="cancel-ship-elig">${eligCue}</p>`
+            : ""
+        }
+      </div>
+      <div class="refund-ship-body package-stack refund-pkg-stack">
+        <div class="package-group refund-pkg is-headerless">
+          <div class="package-items refund-pkg-items">${items}</div>
         </div>
       </div>
-      <div class="refund-item-amount">${money(line.price * alloc.qtyInPackage)}</div>
     </div>`;
 }
 
-function cancelSpecificItemsHtml(cap) {
-  if (!cap.lineItems.available) {
-    return `
-      <section class="card card-pad cancel-panel">
-        <h2>Select items to cancel</h2>
-        <div class="cancel-context-callout" role="status">
-          <strong>Individual item cancellation isn't available</strong>
-          <p>${cap.lineItems.unavailableReason}</p>
-          ${
-            cap.fullOrder.available
-              ? `<button type="button" class="btn btn-md btn-outline" data-action="cancel-intent" data-intent="entire">Cancel entire order instead</button>`
-              : ""
-          }
-        </div>
-      </section>`;
-  }
-
-  const sellerHtml = sellers
+/**
+ * Same seller → shipment → item shape as Refund / Damage.
+ * selectMode: checkboxes for actionable lines; disabled muted rows for the rest.
+ */
+function cancelHierarchyHtml(cap, { selectMode = false, togetherNote = false } = {}) {
+  return sellers
     .map((seller) => {
-      if (sellerRefundsInMirakl(seller)) {
-        return `
-          <section class="card seller-card seller-card-cancel seller-card-handoff">
-            <div class="seller-head">
-              <div class="seller-head-main">
-                <div class="seller-title-row-inline">
-                  <div class="seller-title">${seller.name}</div>
-                  ${
-                    seller.kind === "marketplace"
-                      ? `<span class="seller-kind-chip">Marketplace</span>`
-                      : ""
-                  }
-                  <button type="button" class="external-system-link" data-action="open-mirakl" data-seller="${seller.id}" data-channel="${seller.kind}">Cancel in Mirakl ↗</button>
-                </div>
-                <div class="seller-meta">${seller.itemCount} unit${seller.itemCount === 1 ? "" : "s"} · ${fulfilmentLabel(seller.delivery)}</div>
-              </div>
-            </div>
-            <div class="seller-body">
-              <p class="refund-handoff-note">Cancel these items in Mirakl.</p>
-            </div>
-          </section>`;
+      const sellerRows = (cap.rows || []).filter(
+        (r) => r.seller.id === seller.id && r.units > 0
+      );
+      if (!sellerRows.length) return "";
+
+      if (seller.kind === "marketplace") {
+        return cancelMiraklSellerHtml(seller, sellerRows);
       }
 
-      const shipBlocks = seller.shipments
-        .map((ship) => {
-          const elig = shipmentCancelEligibility(ship, seller);
-          if (!elig.lineItems && !elig.fullOrder) return "";
-          const pkgTotal = ship.packages.length;
-          const pkgs = ship.packages
-            .map((pkg) => {
-              const items = pkg.allocations
-                .map((alloc) => cancelLineItemRow(ship, pkg, alloc, elig))
-                .join("");
-              const showHeader = pkgTotal > 1;
-              return `
-                <div class="package-group refund-pkg${!showHeader ? " is-headerless" : ""}">
-                  ${
-                    showHeader
-                      ? `<div class="package-label refund-pkg-head">
-                          <span class="package-title">${packageHeadingText(pkg, pkgTotal)}</span>
-                        </div>`
-                      : ""
-                  }
-                  <div class="package-items refund-pkg-items">${items}</div>
-                </div>`;
-            })
-            .join("");
-
-          return `
-            <div class="shipment-block shipment-block-refund">
-              <div class="refund-ship-head">
-                <div class="refund-ship-title-row">
-                  <h3>${ship.label}</h3>
-                  ${statusBadge(ship.status)}
-                </div>
-              </div>
-              <div class="refund-ship-meta">
-                ${storeMeta(ship, seller)}
-                <span class="meta-sep" aria-hidden="true">·</span>
-                <span>${serviceLabel(ship.shippingMethod)}</span>
-              </div>
-              <div class="refund-ship-body package-stack refund-pkg-stack">${pkgs}</div>
-            </div>`;
-        })
+      const shipBlocks = cancelGroupByShip(sellerRows)
+        .map(({ ship, entries }) =>
+          cancelShipmentBlockHtml(ship, seller, entries, cap, { selectMode })
+        )
         .join("");
 
-      if (!shipBlocks.trim()) return "";
+      const note =
+        togetherNote && sellerRows.some((r) => r.fullOrder)
+          ? `<p class="cancel-together-note">These items can only be cancelled together.</p>`
+          : "";
 
       return `
         <section class="card seller-card seller-card-refund seller-card-cancel">
           <div class="seller-head">
             <div class="seller-head-main">
               <div class="seller-title">${seller.name}</div>
-              <div class="seller-meta">${seller.itemCount} unit${seller.itemCount === 1 ? "" : "s"} · ${fulfilmentLabel(seller.delivery)}</div>
+              <div class="seller-meta">${cancelSellerMetaLine(seller, sellerRows)}</div>
             </div>
           </div>
-          <div class="seller-body">${shipBlocks}</div>
+          <div class="seller-body">
+            ${shipBlocks}
+            ${note}
+          </div>
         </section>`;
     })
+    .filter(Boolean)
     .join("");
+}
 
-  const selectedUnits = Object.values(state.cancel.items).reduce(
-    (n, q) => n + (Number(q) || 0),
-    0
-  );
+function cancelOtherGuideRows(cap, actionableRows) {
+  const actionable = new Set((actionableRows || []).map((r) => r.key));
+  const guide = cap.guideAll?.length ? cap.guideAll : cap.guide;
+  return guide.filter((r) => !actionable.has(r.key));
+}
+
+function cancelEntirePathHtml(cap) {
+  return `
+    <section class="card card-pad cancel-panel">
+      <div class="select-head">
+        <h2>Cancel entire order</h2>
+        <p class="help">${cancelLinesUnavailableReason(cap)}</p>
+      </div>
+    </section>
+    ${cancelHierarchyHtml(cap, { selectMode: false, togetherNote: true })}`;
+}
+
+function cancelSpecificItemsHtml(cap) {
+  const selectedUnits = cancelSelectedLineUnits();
+  const selectable = cap.lineItems.units;
+  const hasSelection = selectedUnits > 0;
+  const countLabel = hasSelection
+    ? selectedUnits === 1
+      ? "1 item selected"
+      : `${selectedUnits} items selected`
+    : "Nothing selected";
+
+  const orientHelp =
+    !cap.fullOrder.available
+      ? `<p class="help">Full order cancellation isn't available for this order. Select from the eligible items below.</p>`
+      : `<p class="help">Select the items to include in this cancellation.</p>`;
 
   return `
     <section class="card card-pad cancel-panel">
       <div class="select-head select-head-inline">
         <div>
           <h2>Select items to cancel</h2>
-          <p class="help">Only lines eligible for item cancellation can be selected.</p>
+          ${orientHelp}
         </div>
-        <div class="pill-count">${selectedUnits ? `${selectedUnits} selected` : "Nothing selected"}</div>
+        <div class="cancel-select-actions">
+          ${
+            hasSelection
+              ? `<button type="button" class="linkish" data-action="cancel-select-all-eligible">Clear selection</button>`
+              : selectable > 0
+                ? `<button type="button" class="linkish" data-action="cancel-select-all-eligible">Select all eligible</button>`
+                : ""
+          }
+          <div class="pill-count">${countLabel}</div>
+        </div>
       </div>
     </section>
-    ${sellerHtml}
-    <section class="card card-pad cancel-panel">
-      <div class="cancel-reason-field">
-        <label for="cancel-reason-lines">Cancellation reason</label>
-        <select id="cancel-reason-lines" class="select select-reason-default" data-action="cancel-reason">
-          ${cancelReasonOptionsHtml(state.cancel.reason)}
-        </select>
-      </div>
-    </section>`;
+    ${cancelHierarchyHtml(cap, {
+      selectMode: true,
+    })}`;
 }
 
+function cancelNoneHtml(cap) {
+  return `
+    <section class="card card-pad cancel-panel cancel-entry-banner">
+      <h2>Nothing can be cancelled</h2>
+      <p class="help">No items on this order are available for cancellation in Guide. Use refund or return where eligible, or manage Marketplace items in Mirakl.</p>
+    </section>
+    ${cancelHierarchyHtml(cap, { selectMode: false })}`;
+}
+
+/** Radios only when both Entire order and Specific items are genuinely available. */
 function cancelIntentHtml(cap) {
   const intent = state.cancel.intent;
-  const entireDisabled = !cap.fullOrder.available;
-  const linesDisabled = !cap.lineItems.available;
+  const n = cap.fullOrder.units;
 
   return `
-    <section class="card card-pad cancel-intent" aria-label="Cancellation intent">
-      <h2>What would you like to cancel?</h2>
+    <section class="card card-pad cancel-intent" aria-label="Cancellation scope">
+      <h2>What do you want to cancel?</h2>
       <div class="cancel-intent-options" role="radiogroup" aria-label="Cancel scope">
-        <label class="cancel-intent-option${intent === "entire" ? " is-selected" : ""}${entireDisabled ? " is-unavailable" : ""}">
+        <label class="cancel-intent-option${intent === "entire" ? " is-selected" : ""}">
           <input
             type="radio"
             name="cancel-intent"
             data-action="cancel-intent"
             data-intent="entire"
             ${intent === "entire" ? "checked" : ""}
-            ${entireDisabled ? "disabled" : ""}
           />
           <span class="cancel-intent-copy">
             <span class="cancel-intent-title">Entire order</span>
-            <span class="cancel-intent-desc">${
-              entireDisabled
-                ? "No remaining items can be cancelled in Guide."
-                : cap.mirakl.length
-                  ? `Cancel all remaining eligible Guide items (${cap.fullOrder.units} unit${cap.fullOrder.units === 1 ? "" : "s"}).`
-                  : `Cancel all remaining eligible items in this order (${cap.fullOrder.units} unit${cap.fullOrder.units === 1 ? "" : "s"}).`
-            }</span>
-            <span class="cancel-intent-avail">${entireDisabled ? "Unavailable" : "Available"}</span>
+            <span class="cancel-intent-desc">Cancel all ${n} item${n === 1 ? "" : "s"}</span>
           </span>
         </label>
-        <label class="cancel-intent-option${intent === "lines" ? " is-selected" : ""}${linesDisabled ? " is-unavailable" : ""}">
+        <label class="cancel-intent-option${intent === "lines" ? " is-selected" : ""}">
           <input
             type="radio"
             name="cancel-intent"
             data-action="cancel-intent"
             data-intent="lines"
             ${intent === "lines" ? "checked" : ""}
-            ${linesDisabled ? "disabled" : ""}
           />
           <span class="cancel-intent-copy">
             <span class="cancel-intent-title">Specific items</span>
-            <span class="cancel-intent-desc">${
-              linesDisabled
-                ? cap.lineItems.unavailableReason
-                : "Choose one or more eligible items to cancel."
-            }</span>
-            <span class="cancel-intent-avail">${linesDisabled ? "Unavailable" : "Available"}</span>
+            <span class="cancel-intent-desc">Choose individual items or quantities</span>
           </span>
         </label>
       </div>
     </section>`;
 }
 
-function renderCancel() {
-  const cap = cancelCapability();
-  const intent = state.cancel.intent;
-  const selectedUnits =
-    intent === "entire"
-      ? cap.fullOrder.units
-      : Object.values(state.cancel.items).reduce((n, q) => n + (Number(q) || 0), 0);
-  const canReview = !!intent && selectedUnits > 0 && !!state.cancel.reason;
+function cancelReasonNotesHtml() {
+  return `
+    <section class="card card-pad cancel-panel cancel-reason-notes">
+      <div class="cancel-reason-field">
+        <label for="cancel-reason">Cancellation reason <span class="optional-tag">Required</span></label>
+        <select id="cancel-reason" class="select select-reason-default" data-action="cancel-reason">
+          ${cancelReasonOptionsHtml(state.cancel.reason)}
+        </select>
+      </div>
+      <div class="cancel-notes-field">
+        <label for="cancel-notes">Case notes <span class="optional-tag">Required</span></label>
+        <textarea
+          id="cancel-notes"
+          class="case-note-input cancel-notes-input"
+          data-field="cancel-notes"
+          rows="3"
+          placeholder="Add details…"
+        >${escapeHtml(state.cancel.notes || "")}</textarea>
+      </div>
+    </section>`;
+}
 
-  const body =
+function cancelReviewRows(cap) {
+  if (state.cancel.intent === "entire") {
+    return cap.fullOrder.rows.map((r) => ({
+      label: `${r.line?.name || "Item"} ×${r.units}`,
+      reason: state.cancel.reason,
+    }));
+  }
+  const selected = [];
+  for (const entry of cap.lineItems.rows) {
+    const qty = Number(state.cancel.items[entry.key] || 0);
+    if (!qty) continue;
+    selected.push({
+      label: `${entry.line.name} ×${qty}`,
+      reason: state.cancel.reason,
+    });
+  }
+  return selected;
+}
+
+function cancelReviewExcludedHtml(cap) {
+  const actionable =
+    state.cancel.intent === "entire" ? cap.fullOrder.rows : cap.lineItems.rows;
+  const otherGuide = cancelOtherGuideRows(cap, actionable);
+  const items = [...otherGuide, ...(cap.mirakl || [])]
+    .map((r) => {
+      if (!r.line) return "";
+      if (r.tier === "mirakl") {
+        return `<li>Marketplace · ${r.line.name} ×${r.units} — manage in Mirakl</li>`;
+      }
+      const reason = cancelDisabledReason(r, cap);
+      return `<li>${r.seller.name} · ${r.line.name} ×${r.units}${
+        reason ? ` — ${reason}` : ""
+      }</li>`;
+    })
+    .filter(Boolean)
+    .join("");
+  if (!items) return "";
+  return `
+    <div class="cancel-review-excluded">
+      <span class="cancel-review-excluded-label">Not included</span>
+      <ul>${items}</ul>
+    </div>`;
+}
+
+function renderCancelReview(cap = cancelCapability()) {
+  const intent = state.cancel.intent;
+  const units =
+    intent === "entire" ? cap.fullOrder.units : cancelSelectedLineUnits();
+  const cta = cancelSubmitLabel(cap);
+  const rows = cancelReviewRows(cap);
+  const lead =
     intent === "entire"
-      ? cancelEntireSummaryHtml(cap)
-      : intent === "lines"
-        ? cancelSpecificItemsHtml(cap)
-        : `<section class="card card-pad cancel-panel">
-            <p class="help" style="margin:0">Choose Entire order or Specific items to continue.</p>
-          </section>`;
+      ? `Entire order — ${units} item${units === 1 ? "" : "s"} will be cancelled`
+      : `${units} item${units === 1 ? "" : "s"} will be cancelled`;
+  const list = rows
+    .map(
+      (r) => `
+        <li>
+          <div class="refund-review-main">
+            <span class="refund-review-label">${r.label}</span>
+          </div>
+          <div class="refund-review-reason">${escapeHtml(r.reason)}</div>
+        </li>`
+    )
+    .join("");
 
   return `
-    ${workflowHead({
-      title: `Cancel order ${order.id}`,
-      lead: "Guide evaluates what cancellation is available for this order.",
-      actionLabel: "cancellation",
-    })}
     ${workspace(`
-      ${cancelIntentHtml(cap)}
-      ${body}
-      <div class="actions">
-        <button class="btn btn-primary" data-action="cancel-review" ${!canReview ? "disabled" : ""}>Review cancellation</button>
-        <button class="btn btn-secondary" data-action="back-to-order">Back</button>
+      ${workflowHead({
+        title: `Cancel — Order ${order.id}`,
+        showCaseCue: false,
+      })}
+      <section class="card totals refund-review cancel-review">
+        <h2 class="totals-heading">Review cancellation</h2>
+        <p class="cancel-review-lead">${lead}</p>
+        <ul class="refund-review-list">
+          ${list}
+        </ul>
+        ${cancelReviewExcludedHtml(cap)}
+        ${
+          String(state.cancel.notes || "").trim()
+            ? `<div class="cancel-review-notes">
+                <span class="cancel-review-notes-label">Case notes</span>
+                <p>${escapeHtml(state.cancel.notes)}</p>
+              </div>`
+            : ""
+        }
+        ${reviewCaseDestinationHtml()}
+      </section>
+      <div class="actions refund-confirm-actions">
+        <button type="button" class="btn btn-secondary" data-action="cancel-back-build">Back</button>
+        <button type="button" class="btn btn-primary" data-action="cancel-submit">${cta}</button>
       </div>
     `)}`;
+}
+
+function renderCancel() {
+  const cap = cancelCapability();
+  syncCancelEntryIntent(cap);
+
+  if (state.cancel.step === "review") {
+    return renderCancelReview(cap);
+  }
+
+  const intent = state.cancel.intent;
+  const canReview = cancelBuildReady(cap);
+
+  let head = "";
+  let body = "";
+
+  if (cap.entry === "none") {
+    body = cancelNoneHtml(cap);
+  } else if (cap.entry === "choose") {
+    head = cancelIntentHtml(cap);
+    if (intent === "entire") {
+      body = cancelHierarchyHtml(cap, {
+        selectMode: false,
+        togetherNote: false,
+      });
+    } else if (intent === "lines") {
+      body = cancelSpecificItemsHtml(cap);
+    }
+  } else if (cap.entry === "entire") {
+    body = cancelEntirePathHtml(cap);
+  } else if (cap.entry === "lines") {
+    body = cancelSpecificItemsHtml(cap);
+  }
+
+  const showReason = !!intent && cap.entry !== "none";
+
+  return `
+    ${workspace(`
+      ${workflowHead({
+        title: `Cancel — Order ${order.id}`,
+        showCaseCue: false,
+      })}
+      ${head}
+      ${body}
+      ${showReason ? cancelReasonNotesHtml() : ""}
+      <div class="actions refund-confirm-actions">
+        <button type="button" class="btn btn-secondary" data-action="back-to-order">Cancel</button>
+        ${
+          cap.entry === "none"
+            ? ""
+            : `<button type="button" class="btn btn-primary" data-action="cancel-review" ${
+                !canReview ? "disabled" : ""
+              }>Review cancellation</button>`
+        }
+      </div>
+    `)}`;
+}
+
+
+function createCaseItemKey(shipId, lineId) {
+  return `${shipId}:${lineId}`;
+}
+
+function createCaseShipmentItemKeys(ship) {
+  return shipmentUniqueProducts(ship).map(({ line }) =>
+    createCaseItemKey(ship.id, line.id)
+  );
+}
+
+function createCaseShipmentSelectState(ship) {
+  const keys = createCaseShipmentItemKeys(ship);
+  if (!keys.length) return "empty";
+  const selected = keys.filter((k) => state.createCase.items[k]).length;
+  if (!selected) return "none";
+  if (selected === keys.length) return "all";
+  return "some";
+}
+
+function setCreateCaseShipmentSelected(ship, on) {
+  for (const key of createCaseShipmentItemKeys(ship)) {
+    if (on) state.createCase.items[key] = true;
+    else delete state.createCase.items[key];
+  }
+}
+
+function createCaseSellerStoreCue(seller) {
+  const ids = new Set();
+  for (const ship of seller.shipments || []) {
+    if (ship.storeLabel === "Marketplace" || ship.store === "MP") {
+      ids.add("MP");
+      continue;
+    }
+    const resolved = resolveCollectionStore(seller, ship);
+    if (resolved?.id) ids.add(String(resolved.id));
+    else if (ship.store) ids.add(String(ship.store));
+  }
+  if (ids.size !== 1) return "";
+  const id = [...ids][0];
+  return id === "MP" ? "Marketplace" : `Store ${id}`;
+}
+
+function createCaseSellerMetaHtml(seller) {
+  const units = (seller.shipments || []).reduce(
+    (n, ship) => n + shipmentUnitCount(ship),
+    0
+  );
+  const shipCount = (seller.shipments || []).length;
+  const kind = fulfilmentKind(seller.delivery);
+  const fulfil =
+    kind === "CNC"
+      ? "Click &amp; Collect"
+      : kind === "HD"
+        ? "Home delivery"
+        : "";
+  const parts = [
+    `${units} unit${units === 1 ? "" : "s"}`,
+    shipCount
+      ? `${shipCount} shipment${shipCount === 1 ? "" : "s"}`
+      : "",
+    fulfil,
+    createCaseSellerStoreCue(seller),
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function createCaseOrderTotals() {
+  let units = 0;
+  let shipCount = 0;
+  for (const seller of sellers) {
+    for (const ship of seller.shipments || []) {
+      units += shipmentUnitCount(ship);
+      shipCount += 1;
+    }
+  }
+  return { units, shipCount };
+}
+
+/**
+ * Selection summary — what part of the order this case is about.
+ * Never monetary: association is contextual, not a refund amount.
+ */
+function createCaseSelectionSummary() {
+  const draft = state.createCase || {};
+  if (draft.scope === "order") {
+    return { short: "Entire order", title: "Case relates to" };
+  }
+
+  const keys = Object.keys(draft.items || {});
+  if (!keys.length) {
+    return { short: "Choose below", title: "Case relates to" };
+  }
+
+  const fullShips = [];
+  let coveredByFull = 0;
+  for (const seller of sellers) {
+    for (const ship of seller.shipments || []) {
+      if (createCaseShipmentSelectState(ship) === "all") {
+        fullShips.push(ship);
+        coveredByFull += createCaseShipmentItemKeys(ship).length;
+      }
+    }
+  }
+
+  if (fullShips.length && coveredByFull === keys.length) {
+    if (fullShips.length === 1) {
+      return {
+        short: `${fullShips[0].label} selected`,
+        title: "Case relates to",
+      };
+    }
+    return {
+      short: `${fullShips.length} shipments selected`,
+      title: "Case relates to",
+    };
+  }
+
+  if (keys.length === 1) {
+    return { short: "1 item selected", title: "Case relates to" };
+  }
+  return {
+    short: `${keys.length} items selected`,
+    title: "Case relates to",
+  };
+}
+
+function createCaseItemRowHtml(ship, line, qty, unitStatus = null, parentStatus = null) {
+  const key = createCaseItemKey(ship.id, line.id);
+  const checked = !!state.createCase.items[key];
+  const showItemStatus =
+    unitStatus && parentStatus && !sameStatus(unitStatus, parentStatus);
+  return `
+    <div class="create-case-item${checked ? " is-selected" : ""}">
+      <div class="create-case-item-main">
+        <input
+          class="checkbox"
+          type="checkbox"
+          data-action="create-case-toggle-item"
+          data-ship="${ship.id}"
+          data-line="${line.id}"
+          ${checked ? "checked" : ""}
+          aria-label="Associate ${line.name}"
+        />
+        <div class="item-cell">
+          ${productThumbHtml(line)}
+          <div class="pkg-item-body">
+            <div class="item-name">${line.name} <span class="item-qty-inline">×${qty}</span></div>
+            <div class="item-meta-line">SKU ${line.sku} · ${money(line.price)} each</div>
+            ${
+              showItemStatus
+                ? `<div class="item-status-inline">${statusBadge(unitStatus)}</div>`
+                : ""
+            }
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function createCasePackageBlockHtml(ship, pkg, packageTotal, shipmentStatus) {
+  const showHeader = packageTotal > 1;
+  const items = pkg.allocations
+    .map((alloc) => {
+      const line = lines[alloc.lineId];
+      if (!line) return "";
+      return createCaseItemRowHtml(
+        ship,
+        line,
+        alloc.qtyInPackage,
+        alloc.status || null,
+        pkg.status || shipmentStatus
+      );
+    })
+    .join("");
+
+  return `
+    <div class="package-group create-case-pkg${!showHeader ? " is-headerless" : ""}">
+      ${
+        showHeader
+          ? `<div class="package-label create-case-pkg-head">
+              <span class="package-title">${packageHeadingText(pkg, packageTotal)}</span>
+            </div>`
+          : ""
+      }
+      <div class="package-items create-case-pkg-items">${items}</div>
+    </div>`;
+}
+
+function createCaseShipmentBlockHtml(ship, seller) {
+  const display = displayShipmentStatus(ship, seller, shippitByTracking);
+  const shipState = createCaseShipmentSelectState(ship);
+  const pkgTotal = ship.packages.length;
+  const body = `
+    <div class="create-case-ship-body package-stack">
+      ${ship.packages
+        .map((pkg) =>
+          createCasePackageBlockHtml(ship, pkg, pkgTotal, ship.status)
+        )
+        .join("")}
+    </div>`;
+
+  return `
+    <div class="shipment-block shipment-block-create-case${
+      shipState === "all" ? " is-selected" : ""
+    }">
+      <div class="create-case-ship-head">
+        <div class="create-case-ship-title-row">
+          ${checkboxTriHtml({
+            action: "create-case-toggle-ship",
+            attrs: `data-ship="${ship.id}"`,
+            state: shipState === "empty" ? "none" : shipState,
+            label: `Associate ${ship.label}`,
+          })}
+          <h3>${ship.label}</h3>
+          ${statusBadge(display.label || ship.status)}
+        </div>
+      </div>
+      <div class="create-case-ship-meta">
+        ${shipmentDetailMetaHtml(ship, seller)}
+      </div>
+      ${body}
+    </div>`;
+}
+
+function createCaseSpecificTreeHtml() {
+  return sellers
+    .map((seller) => {
+      const ships = (seller.shipments || [])
+        .map((ship) => createCaseShipmentBlockHtml(ship, seller))
+        .join("");
+      return `
+        <section class="create-case-seller">
+          <header class="create-case-seller-head">
+            <h3>${seller.name}</h3>
+            <p>${createCaseSellerMetaHtml(seller)}</p>
+          </header>
+          <div class="create-case-seller-body">${ships}</div>
+        </section>`;
+    })
+    .join("");
+}
+
+/**
+ * Case scope — mandatory association.
+ * Entire order ≠ select-all-items; specific reveals shipment/item tree.
+ */
+function createCaseOrderContextHtml(caseType = "delivery") {
+  const draft = state.createCase;
+  const scope = draft.scope === "specific" ? "specific" : "order";
+  const totals = createCaseOrderTotals();
+  const selection = createCaseSelectionSummary();
+  const orderMeta = `Order ${order.id} · ${totals.units} unit${
+    totals.units === 1 ? "" : "s"
+  }`;
+
+  const specificTree =
+    scope === "specific"
+      ? `<div class="create-case-scope-tree">
+          <p class="create-case-scope-tree-help">Choose the shipment or merchandise this case relates to.</p>
+          ${createCaseSpecificTreeHtml()}
+        </div>`
+      : "";
+
+  return `
+    <section
+      class="card create-case-order"
+      aria-label="Case relates to"
+      data-case-type="${caseType}"
+    >
+      <header class="create-case-scope-head">
+        <h2>What does this case relate to?</h2>
+        <p class="create-case-scope-required">Required</p>
+      </header>
+      <div class="create-case-scope-options" role="radiogroup" aria-label="Case relates to">
+        <label class="create-case-scope-option${
+          scope === "order" ? " is-selected" : ""
+        }">
+          <input
+            type="radio"
+            name="create-case-scope"
+            value="order"
+            data-action="create-case-scope"
+            ${scope === "order" ? "checked" : ""}
+          />
+          <span class="create-case-scope-option-body">
+            <span class="create-case-scope-option-title">Entire order</span>
+            <span class="create-case-scope-option-meta">${orderMeta}</span>
+          </span>
+        </label>
+        <label class="create-case-scope-option${
+          scope === "specific" ? " is-selected" : ""
+        }">
+          <input
+            type="radio"
+            name="create-case-scope"
+            value="specific"
+            data-action="create-case-scope"
+            ${scope === "specific" ? "checked" : ""}
+          />
+          <span class="create-case-scope-option-body">
+            <span class="create-case-scope-option-title">Specific shipment or items</span>
+            <span class="create-case-scope-option-meta">${
+              scope === "specific" && selection.short !== "Choose below"
+                ? selection.short
+                : "Choose from the order below"
+            }</span>
+          </span>
+        </label>
+      </div>
+      ${specificTree}
+    </section>`;
+}
+
+function createCaseOutcomeHtml() {
+  const outcome =
+    state.createCase.outcome === "follow-up" ? "follow-up" : "resolved";
+  return `
+    <section class="card create-case-outcome" aria-label="Case outcome">
+      <header class="create-case-scope-head">
+        <h2>Case outcome</h2>
+        <p class="create-case-scope-required">Required</p>
+      </header>
+      <div class="create-case-scope-options" role="radiogroup" aria-label="Case outcome">
+        <label class="create-case-scope-option${
+          outcome === "resolved" ? " is-selected" : ""
+        }">
+          <input
+            type="radio"
+            name="create-case-outcome"
+            value="resolved"
+            data-action="create-case-outcome"
+            ${outcome === "resolved" ? "checked" : ""}
+          />
+          <span class="create-case-scope-option-body">
+            <span class="create-case-scope-option-title">Resolved during this interaction</span>
+            <span class="create-case-scope-option-meta">Create and close the case. No further action required.</span>
+          </span>
+        </label>
+        <label class="create-case-scope-option${
+          outcome === "follow-up" ? " is-selected" : ""
+        }">
+          <input
+            type="radio"
+            name="create-case-outcome"
+            value="follow-up"
+            data-action="create-case-outcome"
+            ${outcome === "follow-up" ? "checked" : ""}
+          />
+          <span class="create-case-scope-option-body">
+            <span class="create-case-scope-option-title">Follow-up required</span>
+            <span class="create-case-scope-option-meta">Create the case and keep it open.</span>
+          </span>
+        </label>
+      </div>
+    </section>`;
+}
+
+function createCaseCustomerStripHtml() {
+  return `
+    <div class="create-case-customer" aria-label="Customer and order">
+      <p class="create-case-customer-primary">
+        <span class="create-case-customer-name">${customer.name}</span>
+        <span class="create-case-customer-sep" aria-hidden="true">·</span>
+        <span>Order ${order.id}</span>
+      </p>
+      <p class="create-case-customer-contact">
+        <span>${customer.email}</span>
+        <span class="create-case-customer-sep" aria-hidden="true">·</span>
+        <span>${customer.phone}</span>
+      </p>
+    </div>`;
+}
+
+/**
+ * Create case — linear task layout (no cockpit rail).
+ * Customer identity sits under the title; order scope is in the form.
+ */
+function renderCreateCase() {
+  const draft = state.createCase;
+  const canCreate = createCaseCanSubmit();
+  const cta = createCaseSubmitLabel(draft);
+  const typeOptions = CASE_TYPES.map(
+    (t) =>
+      `<option value="${t.id}" ${
+        t.id === draft.type ? "selected" : ""
+      }>${t.label}</option>`
+  ).join("");
+
+  return `
+    ${workspace(
+      `
+    <div class="create-case-shell">
+      ${workflowHead({
+        title: "Create case",
+        showCaseCue: false,
+      })}
+      ${createCaseCustomerStripHtml()}
+      <div class="create-case-page">
+        <section class="card create-case-details" aria-label="Case details">
+          <div class="create-case-field create-case-field-type">
+            <label for="create-case-type">Case type</label>
+            <select id="create-case-type" class="select select-reason-default" data-action="create-case-type">
+              ${typeOptions}
+            </select>
+          </div>
+          <div class="create-case-field create-case-field-summary">
+            <label for="create-case-summary">Case summary</label>
+            <p class="create-case-field-hint">Short description shown in case lists</p>
+            <input
+              id="create-case-summary"
+              class="create-case-input create-case-input-summary"
+              type="text"
+              data-field="create-case-summary"
+              value="${escapeHtml(draft.summary || "")}"
+              placeholder="e.g. Customer following up on delayed delivery"
+              maxlength="160"
+              required
+            />
+          </div>
+          <div class="create-case-field create-case-field-notes">
+            <label for="create-case-notes">Notes</label>
+            <textarea
+              id="create-case-notes"
+              class="create-case-textarea"
+              rows="2"
+              data-field="create-case-notes"
+              placeholder="Add details about the customer’s enquiry…"
+              required
+            >${escapeHtml(draft.notes || "")}</textarea>
+          </div>
+        </section>
+        ${createCaseOrderContextHtml(draft.type)}
+        ${createCaseOutcomeHtml()}
+        <div class="create-case-page-footer">
+          <button type="button" class="btn btn-secondary" data-action="back-to-order">Cancel</button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-action="create-case-submit"
+            ${canCreate ? "" : "disabled"}
+          >${cta}</button>
+        </div>
+      </div>
+    </div>
+    `,
+      { showRail: false }
+    )}`;
+}
+
+/**
+ * Post-create confirmation — light completion of the Create case task.
+ * Case reference is the focal output; View case is a separate action.
+ */
+function renderCreateCaseDone() {
+  const result = state.createCaseResult;
+  if (!result) {
+    state.view = state.originView || "detail";
+    return renderDetail();
+  }
+  const resolved = result.outcome === "resolved";
+  const typeLabel =
+    CASE_TYPES.find((t) => t.topic === result.topic)?.label || result.topic;
+
+  return `
+    ${workspace(
+      `
+    <div class="create-case-done">
+      <section class="card card-pad create-case-confirm" aria-label="Case created">
+        <p class="create-case-confirm-banner">
+          <span class="create-case-confirm-check" aria-hidden="true">${icons.check}</span>
+          ${resolved ? "Case recorded" : "Case created"}
+        </p>
+        <div class="create-case-confirm-ref">
+          <p class="create-case-confirm-ref-label">Case reference</p>
+          <p class="create-case-confirm-ref-row">
+            <span class="create-case-confirm-ref-id">#${result.id}</span>
+            ${copyControl(result.id, "case reference")}
+          </p>
+        </div>
+        <div class="create-case-confirm-outcome">
+          <p class="create-case-confirm-meta">${typeLabel}</p>
+          <p class="create-case-confirm-body">
+            ${
+              resolved
+                ? "Resolved during this interaction."
+                : "This interaction is now linked to the case."
+            }
+          </p>
+        </div>
+        <div class="create-case-confirm-actions">
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-action="create-case-done-back"
+          >Back to order</button>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            data-action="view-case"
+            data-case="${result.id}"
+          >View case</button>
+        </div>
+      </section>
+    </div>
+    `,
+      { showRail: false }
+    )}`;
 }
 
 function orderHasRefundable() {
@@ -1921,52 +3382,67 @@ function orderHasDeliveredUnits() {
 }
 
 /**
- * Order Detail workflows — shared by header Actions ▾ and bottom panel.
- * Create case stays available even when a case is linked.
- * Case messaging belongs to the shell / action workflow — not this component.
+ * Order workflows — shared by header Actions ▾ and bottom panel.
  */
 function availableOrderActions() {
   return [
     { id: "start-refund", label: "Refund", icon: icons.refund },
     { id: "start-cancel", label: "Cancel", icon: icons.cancelItems },
     { id: "report-damage", label: "Report damage", icon: icons.reportDamage },
-    { id: "create-case", label: "Create case", icon: icons.createCase },
   ];
 }
 
 /**
- * Compact header cue — am I writing to a case?
- * Detail stays in the sidebar Case card; this sits next to Order actions.
+ * Case shortcut(s) for Actions — task access, not the recommender itself.
+ * Recommendation detail stays on the Case card / match drawer.
+ *   no candidate → Create case · Link existing case
+ *   candidate(s) → Review case match · Create case
+ *   linked       → Update case (Switch stays on Case card)
  */
-function headerCaseContextHtml() {
+function caseActionItems() {
   const linked = linkedCase();
   if (linked) {
-    return `
-      <span class="header-case-cue is-linked">
-        <span class="header-case-cue-icon" aria-hidden="true">${icons.caseLink}</span>
-        <button
-          type="button"
-          class="header-case-cue-ref"
-          data-action="view-case"
-          data-case="${linked.id}"
-          title="View linked case #${linked.id}"
-        >Case #${linked.id}</button>
-        <span class="header-case-cue-sep" aria-hidden="true">·</span>
-        <button type="button" class="header-case-cue-link" data-action="change-linked-case">Switch</button>
-      </span>`;
+    return [
+      {
+        id: "update-case",
+        label: "Update case",
+        icon: icons.createCase,
+      },
+    ];
   }
-  return `
-    <span class="header-case-cue is-unlinked">
-      <span class="header-case-cue-icon" aria-hidden="true">${icons.caseLink}</span>
-      <span class="header-case-cue-ref">No case linked</span>
-      <span class="header-case-cue-sep" aria-hidden="true">·</span>
-      <button type="button" class="header-case-cue-link" data-action="open-link-case">Link case</button>
-    </span>`;
+  const evidence = caseLinkEvidence();
+  if (evidence.level === "order" || evidence.level === "recent") {
+    return [
+      {
+        id: "open-link-case",
+        label: "Review case match",
+        icon: icons.caseLink,
+        emphasize: true,
+      },
+      {
+        id: "create-case",
+        label: "Create case",
+        icon: icons.createCase,
+      },
+    ];
+  }
+  return [
+    {
+      id: "create-case",
+      label: "Create case",
+      icon: icons.createCase,
+    },
+    {
+      id: "open-link-case",
+      label: "Link existing case",
+      icon: icons.caseLink,
+    },
+  ];
 }
 
 /**
- * Compact header shortcut — same servicing set as the bottom panel.
- * Track shipments is navigation (separated); no case messaging in the menu.
+ * Compact header Actions — order tasks, then one state-aware case shortcut.
+ * Views (Order detail / Track) stay in tabs; not duplicated here.
  */
 function orderActionsMenu() {
   const open = !!state.actionsMenuOpen;
@@ -1979,50 +3455,47 @@ function orderActionsMenu() {
       </button>`
     )
     .join("");
-  const trackItem = `
-    <button
-      type="button"
-      class="order-actions-menu-item is-nav"
-      role="menuitem"
-      data-view="track"
-    >
-      <span class="btn-icon" aria-hidden="true">${icons.truck}</span>
-      Track shipments
-    </button>
-    <div class="order-actions-menu-sep" role="separator"></div>`;
+  const caseItems = caseActionItems()
+    .map(
+      (a) => `
+      <button type="button" class="order-actions-menu-item is-case${
+        a.emphasize ? " is-emphasized" : ""
+      }" role="menuitem" data-action="${a.id}">
+        <span class="btn-icon" aria-hidden="true">${a.icon}</span>
+        ${a.label}
+      </button>`
+    )
+    .join("");
   return `
-    <div class="header-actions-cluster">
-      ${headerCaseContextHtml()}
-      <div class="order-actions-menu${open ? " is-open" : ""}">
-        <button
-          type="button"
-          class="btn btn-md btn-outline order-actions-trigger"
-          data-action="toggle-order-actions"
-          aria-expanded="${open ? "true" : "false"}"
-          aria-haspopup="menu"
-          aria-label="Order actions"
-        >
-          Order actions
-          <span class="btn-icon order-actions-chevron" aria-hidden="true">${icons.chevronDown}</span>
-        </button>
-        ${
-          open
-            ? `<div class="order-actions-dropdown" role="menu" aria-label="Order actions">
-                ${trackItem}
+    <div class="order-actions-menu${open ? " is-open" : ""}">
+      <button
+        type="button"
+        class="btn btn-md btn-outline order-actions-trigger"
+        data-action="toggle-order-actions"
+        aria-expanded="${open ? "true" : "false"}"
+        aria-haspopup="menu"
+        aria-label="Actions"
+      >
+        Actions
+        <span class="btn-icon order-actions-chevron" aria-hidden="true">${icons.chevronDown}</span>
+      </button>
+      ${
+        open
+          ? `<div class="order-actions-dropdown" role="menu" aria-label="Actions">
                 ${actionItems}
+                <div class="order-actions-menu-sep" role="separator"></div>
+                ${caseItems}
               </div>`
-            : ""
-        }
-      </div>
+          : ""
+      }
     </div>`;
 }
 
 /**
- * Utilitarian end-of-page action surface — same set as header ▾.
- * Track = quiet view shortcut; buttons = servicing actions. No case copy.
+ * End-of-page Actions — same groups as the header menu.
+ * Order tasks stay stable; case shortcut is state-aware (Create / Review / Update).
  */
 function orderActionsPanel() {
-  const onTrack = state.view === "track";
   const actionButtons = availableOrderActions()
     .map(
       (a) => `
@@ -2032,20 +3505,24 @@ function orderActionsPanel() {
       </button>`
     )
     .join("");
-  const trackNav = onTrack
-    ? ""
-    : `
-        <button type="button" class="order-actions-track" data-view="track">
-          <span class="order-actions-track-icon" aria-hidden="true">${icons.truck}</span>
-          Track shipments →
-        </button>
-        <span class="order-actions-btns-sep" aria-hidden="true"></span>`;
+  const caseButtons = caseActionItems()
+    .map(
+      (a) => `
+      <button type="button" class="btn btn-md btn-outline order-actions-case${
+        a.emphasize ? " is-emphasized" : ""
+      }" data-action="${a.id}">
+        <span class="btn-icon" aria-hidden="true">${a.icon}</span>
+        ${a.label}
+      </button>`
+    )
+    .join("");
   return `
     <section class="card card-pad order-actions-card" aria-labelledby="order-actions-heading">
-      <h2 id="order-actions-heading">Order actions</h2>
+      <h2 id="order-actions-heading">Actions</h2>
       <div class="order-actions-btns">
-        ${trackNav}
         ${actionButtons}
+        <span class="order-actions-btns-sep" aria-hidden="true"></span>
+        ${caseButtons}
       </div>
     </section>`;
 }
@@ -2122,7 +3599,39 @@ function soldByFactHtml() {
     </div>`;
 }
 
-/** OnePass membership mark for the customer section in Order information. */
+/**
+ * Payment sits with Total / Refunded — supporting financial context, not rail data.
+ * Multiple tenders collapse to “Multiple methods”; Refund owns destination detail.
+ */
+function paymentFactHtml() {
+  const tenders = Array.isArray(order.paymentMethods)
+    ? order.paymentMethods.filter(Boolean)
+    : [];
+  let display = "";
+  if (tenders.length > 1) {
+    display = "Multiple methods";
+  } else if (tenders.length === 1) {
+    const t = tenders[0];
+    display =
+      typeof t === "string"
+        ? t
+        : t.last4
+          ? `${t.method || t.brand || "Card"} ···· ${t.last4}`
+          : t.method || t.brand || "—";
+  } else if (order.paymentMethod || order.paymentLast4) {
+    display = order.paymentLast4
+      ? `${order.paymentMethod || "Card"} ···· ${order.paymentLast4}`
+      : order.paymentMethod;
+  }
+  if (!display) return "";
+  return `
+    <div class="fact fact-payment">
+      <span class="label">Payment</span>
+      <span class="value value-secondary">${display}</span>
+    </div>`;
+}
+
+/** OnePass membership mark for the Customer rail. */
 function onePassMemberHtml() {
   if (!customer.onePassMember) return "";
   return `
@@ -2139,25 +3648,109 @@ function onePassMemberHtml() {
 }
 
 const AI_PREVERIFY_TOOLTIP =
-  "Completed by AI before handoff. This indicator doesn't update after manual verification.";
+  "Completed automatically before handoff. This indicator doesn't update after manual verification.";
+
+/** Soft green outline on arrival — long enough to orient, then fades. */
+const PREVERIFY_ATTENTION_MS = 5000;
+let preVerifyAttentionTimer = null;
+
+function clearPreVerifyAttentionTimer() {
+  if (preVerifyAttentionTimer) {
+    clearTimeout(preVerifyAttentionTimer);
+    preVerifyAttentionTimer = null;
+  }
+}
+
+function resetPreVerifyAttention() {
+  clearPreVerifyAttentionTimer();
+  state.preVerifyAttention = null;
+}
+
+function settlePreVerifyAttention() {
+  if (state.preVerifyAttention !== "active") return;
+  /** Mark done first so a concurrent render won't re-apply the class. */
+  state.preVerifyAttention = "done";
+  clearPreVerifyAttentionTimer();
+  console.info("[analytics] preverify_attention_settled");
+  /**
+   * Fade on the live node — a full re-render would replace the card and
+   * cut the CSS transition short.
+   */
+  const card = document.querySelector(".rail-customer-card.is-verify-highlight");
+  if (card) {
+    card.classList.remove("is-verify-highlight");
+  }
+}
 
 /**
- * Customer/contact handoff signal — quiet line under the name.
- * Confirmation cue (green text), not a filled lifecycle badge. Show nothing if unset.
+ * First land on Detail/Track with pre-verify → temporary Customer outline.
+ * One pass per interaction; no dismiss.
+ */
+function syncPreVerifyAttentionAfterRender() {
+  if (!state.aiThreeStepPreVerified) {
+    clearPreVerifyAttentionTimer();
+    state.preVerifyAttention = null;
+    return;
+  }
+  if (state.view !== "detail" && state.view !== "track") return;
+
+  if (state.preVerifyAttention == null) {
+    state.preVerifyAttention = "active";
+    console.info("[analytics] preverify_attention_active");
+    clearPreVerifyAttentionTimer();
+    preVerifyAttentionTimer = setTimeout(
+      settlePreVerifyAttention,
+      PREVERIFY_ATTENTION_MS
+    );
+    requestAnimationFrame(() => render());
+    return;
+  }
+
+  if (state.preVerifyAttention === "active" && !preVerifyAttentionTimer) {
+    preVerifyAttentionTimer = setTimeout(
+      settlePreVerifyAttention,
+      PREVERIFY_ATTENTION_MS
+    );
+  }
+}
+
+/**
+ * Persistent cue — green check stays; outline is temporary attention only.
  */
 function aiPreVerificationIdentityHtml() {
   if (!state.aiThreeStepPreVerified) return "";
   return `
-    <p class="rail-preverify" title="${AI_PREVERIFY_TOOLTIP}">
-      <span class="rail-preverify-icon" aria-hidden="true">${icons.check}</span>
-      3-step pre-verified
+    <p
+      class="rail-verify-quiet"
+      title="${AI_PREVERIFY_TOOLTIP}"
+    >
+      <span class="rail-verify-quiet-icon" aria-hidden="true">${icons.check}</span>
+      3-step verified
     </p>`;
 }
 
 /**
- * Order header — order identity, fulfilment, composition, money.
- * Customer/contact attributes (including AI pre-verify) live in the Customer rail.
- * Case linkage lives beside Order actions (servicing context).
+ * Quiet servicing-context cue — only when a case is linked.
+ * Case management stays in the Case card / Actions menu.
+ */
+function heroCaseLinkedCueHtml() {
+  const linked = linkedCase();
+  if (!linked) return "";
+  const detail = `Linked to Case #${linked.id}`;
+  return `
+    <p
+      class="hero-case-linked"
+      title="${detail}"
+      aria-label="${detail}"
+    >
+      <span class="hero-case-linked-icon" aria-hidden="true">${icons.caseLink}</span>
+      <span aria-hidden="true">Linked</span>
+    </p>`;
+}
+
+/**
+ * Order header — identity, fulfilment type, composition, financial summary.
+ * Service level + ATL + destination live in the rail; execution in Track.
  */
 function hero({ showActionsMenu = false } = {}) {
   const refunded = totalRefundedAmount();
@@ -2178,6 +3771,9 @@ function hero({ showActionsMenu = false } = {}) {
       : "";
 
   const fulfilment = orderFulfilmentSummaryHtml();
+  const aside = showActionsMenu
+    ? `<div class="hero-title-aside">${heroCaseLinkedCueHtml()}${orderActionsMenu()}</div>`
+    : "";
 
   return `
     <section class="card card-accent card-pad hero-card">
@@ -2189,11 +3785,7 @@ function hero({ showActionsMenu = false } = {}) {
               ${copyControl(order.id, "order number")}
               ${statusBadge(order.status, { prominent: true })}
             </div>
-            ${
-              showActionsMenu
-                ? `<div class="hero-title-aside">${orderActionsMenu()}</div>`
-                : ""
-            }
+            ${aside}
           </div>
           <p class="sub">
             <span>${formatAuDate(order.date)}</span>
@@ -2212,6 +3804,7 @@ function hero({ showActionsMenu = false } = {}) {
         </div>
         <div class="fact-split" aria-hidden="true"></div>
         <div class="facts-group facts-financial">
+          ${paymentFactHtml()}
           <div class="fact"><span class="label">Total</span><span class="value">${money(order.total)}</span></div>
           ${refundedFact}
         </div>
@@ -2220,9 +3813,14 @@ function hero({ showActionsMenu = false } = {}) {
 }
 
 function deliveryAddressLines() {
-  const raw = shipTo?.address || sellers[0]?.shipToAddress || "";
-  const [street, ...rest] = raw.split(",").map((s) => s.trim());
-  return { street, locality: rest.join(", "), full: raw };
+  return addressLinesFrom(shipTo?.address || sellers[0]?.shipToAddress || "");
+}
+
+function addressLinesFrom(raw) {
+  const full = String(raw || "").trim();
+  if (!full) return { street: "", locality: "", full: "" };
+  const [street, ...rest] = full.split(",").map((s) => s.trim());
+  return { street, locality: rest.join(", "), full };
 }
 
 /**
@@ -2283,32 +3881,142 @@ function firstCncSeller() {
   return sellers.find((s) => fulfilmentKind(s.delivery) === "CNC") || null;
 }
 
-function hdDestinationPromiseHtml() {
-  const region = shipTo?.region || "";
-  const supported = sellers.some(
-    (s) =>
-      destinationService.appliesToKinds.includes(s.kind) &&
-      fulfilmentKind(s.delivery) === "HD"
-  );
-  const timeframe =
-    supported && region
-      ? destinationService.timeframeByRegion[region] || ""
-      : "";
-
-  if (supported && region && timeframe) {
-    return `<p class="track-dest-promise"><span class="track-dest-region">${region}</span><span class="track-dest-sep" aria-hidden="true">·</span>${destinationService.service}<span class="track-dest-sep" aria-hidden="true">·</span>${timeframe}</p>`;
+/**
+ * Distinct HD shipping methods across the order.
+ * When more than one, the rail does not aggregate — Track owns per-shipment detail.
+ */
+function hdShippingMethods() {
+  const methods = [];
+  const seen = new Set();
+  for (const seller of sellers) {
+    if (fulfilmentKind(seller.delivery) !== "HD") continue;
+    for (const ship of seller.shipments || []) {
+      const raw = String(ship.shippingMethod || "").trim();
+      if (!raw) continue;
+      const key = raw.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      methods.push(raw);
+    }
   }
-  if (region) {
-    return `<p class="track-dest-promise"><span class="track-dest-region">${region}</span></p>`;
-  }
-  return "";
+  return methods;
 }
 
 /**
- * Page-level fulfilment destination — parallel Collect from / Delivery to.
- * Mixed orders list both under Fulfilment.
+ * Single shared HD service for the rail, or empty when unknown.
+ * Prefer a unanimous shipment method; otherwise order-level destination service
+ * (e.g. Standard delivery) so Care still sees the service promise.
  */
-function deliveryDestinationStrip() {
+function hdRailServiceLabel() {
+  const methods = hdShippingMethods();
+  if (methods.length === 1) return serviceLabel(methods[0]);
+  return String(destinationService?.service || "").trim();
+}
+
+/**
+ * Deliver-to attributes — Metro chip · service, then ATL / instruction.
+ * Destination-level (not per-shipment); Track owns carrier/status/tracking.
+ */
+function deliveryDetailMetaRailHtml() {
+  const rows = [];
+  const region = String(shipTo?.region || "").trim();
+  const service = hdRailServiceLabel();
+  if (region || service) {
+    const bits = [];
+    if (region) {
+      bits.push(`<span class="rail-fulfilment-region">${region}</span>`);
+    }
+    if (service) {
+      bits.push(`<span class="rail-fulfilment-service">${service}</span>`);
+    }
+    rows.push(
+      `<p class="rail-delivery-meta-line rail-delivery-service-row">${bits.join(
+        `<span class="rail-delivery-meta-sep" aria-hidden="true">·</span>`
+      )}</p>`
+    );
+  }
+  if (typeof shipTo?.authorityToLeave === "boolean") {
+    rows.push(
+      `<p class="rail-delivery-meta-line">Authority to leave · ${
+        shipTo.authorityToLeave ? "Yes" : "No"
+      }</p>`
+    );
+  }
+  const note =
+    shipTo?.authorityToLeave === true
+      ? String(shipTo.authorityToLeaveNote || "").trim()
+      : "";
+  if (note) {
+    rows.push(`<p class="rail-delivery-meta-note">${note}</p>`);
+  }
+  if (!rows.length) return "";
+  return `<div class="rail-delivery-meta">${rows.join("")}</div>`;
+}
+
+/**
+ * Collection destination — normal body; store id secondary within the line.
+ * Labels (Collect from) carry hierarchy, not the store name.
+ */
+function collectionDestinationHtml(store) {
+  if (!store) return `<p class="rail-fulfilment-dest">Click &amp; Collect</p>`;
+  const name = store.name || (store.id ? `Store ${store.id}` : "Click &amp; Collect");
+  const idBit =
+    store.name && store.id
+      ? `<span class="rail-fulfilment-dest-meta"> · Store ${store.id}</span>`
+      : "";
+  return `<p class="rail-fulfilment-dest">${name}${idBit}</p>`;
+}
+
+/**
+ * Address under Collect from / Deliver to.
+ * Single line (wraps naturally); tone: dest = body, secondary = quieter.
+ */
+function railAddressBlockHtml(addr, copyLabel, { tone = "dest" } = {}) {
+  if (!addr?.full) return "";
+  const cls =
+    tone === "secondary"
+      ? "rail-fulfilment-addr rail-copy-row"
+      : "rail-fulfilment-dest rail-copy-row";
+  return `
+    <div class="${cls}">
+      <p>${addr.full}</p>
+      ${copyControl(addr.full, copyLabel)}
+    </div>`;
+}
+
+/** One destination block inside the stable Fulfilment card. */
+function fulfilmentCollectFromBlockHtml(store) {
+  if (!store) return "";
+  const storeAddr = addressLinesFrom(store.address || "");
+  return `
+    <div class="rail-fulfilment-block">
+      <p class="rail-fulfilment-method">
+        <span class="rail-fulfilment-method-icon" aria-hidden="true">${icons.store}</span>
+        Collect from
+      </p>
+      ${collectionDestinationHtml(store)}
+      ${railAddressBlockHtml(storeAddr, "store address", { tone: "secondary" })}
+    </div>`;
+}
+
+function fulfilmentDeliverToBlockHtml(addr) {
+  if (!addr?.full) return "";
+  return `
+    <div class="rail-fulfilment-block">
+      <p class="rail-fulfilment-method">
+        <span class="rail-fulfilment-method-icon" aria-hidden="true">${icons.truck}</span>
+        Deliver to
+      </p>
+      ${railAddressBlockHtml(addr, "delivery address", { tone: "dest" })}
+      ${deliveryDetailMetaRailHtml()}
+    </div>`;
+}
+
+/**
+ * Right-rail Fulfilment card — always titled Fulfilment.
+ * Contains one or more destination blocks: Collect from / Deliver to.
+ */
+function fulfilmentContextRailHtml() {
   const kinds = orderFulfilmentKinds();
   const hasCnc = kinds.has("CNC");
   const hasHd = kinds.has("HD");
@@ -2316,133 +4024,41 @@ function deliveryDestinationStrip() {
   const store = resolveCollectionStore(cncSeller, cncSeller?.shipments?.[0]);
   const addr = deliveryAddressLines();
 
-  if (hasCnc && hasHd) {
-    const collectPrimary = collectionStorePrimaryName(store) || "Click &amp; Collect";
-    const collectMeta = store?.id
-      ? `Store ${store.id} · Click &amp; Collect`
-      : "Click &amp; Collect";
-    const deliveryLine = addr.full
-      ? addr.full.split(",")[0].trim()
-      : "Home delivery";
-    return `
-      <section class="track-dest track-dest-mixed" aria-label="Fulfilment destinations">
-        <div class="track-dest-heading">
-          <span class="track-dest-label">Fulfilment</span>
-        </div>
-        <div class="track-dest-lane">
-          <span class="track-dest-lane-icon" aria-hidden="true">${icons.store}</span>
-          <div class="track-dest-lane-body">
-            <p class="track-dest-lane-title">Collect from — ${collectPrimary}</p>
-            <p class="track-dest-lane-meta">${collectMeta}</p>
-          </div>
-        </div>
-        <div class="track-dest-lane">
-          <span class="track-dest-lane-icon" aria-hidden="true">${icons.truck}</span>
-          <div class="track-dest-lane-body">
-            <p class="track-dest-lane-title">Delivery to — ${deliveryLine}</p>
-            <p class="track-dest-lane-meta">Home delivery</p>
-          </div>
-        </div>
-      </section>`;
-  }
-
-  if (hasCnc && store) {
-    const primary = collectionStorePrimaryName(store);
-    const meta = store.id
-      ? `Store ${store.id} · Click &amp; Collect`
-      : "Click &amp; Collect";
-    return `
-      <section class="track-dest" aria-label="Collection destination">
-        <div class="track-dest-heading">
-          <span class="track-dest-icon" aria-hidden="true">${icons.store}</span>
-          <span class="track-dest-label">Collect from</span>
-        </div>
-        <p class="track-dest-place">${primary}</p>
-        ${store.address ? `<p class="track-dest-address">${store.address}</p>` : ""}
-        <p class="track-dest-promise">${meta}</p>
-      </section>`;
-  }
-
-  if (!addr.full) return "";
+  const blocks = [];
+  if (hasCnc) blocks.push(fulfilmentCollectFromBlockHtml(store));
+  if (hasHd) blocks.push(fulfilmentDeliverToBlockHtml(addr));
+  const body = blocks.filter(Boolean).join("");
+  if (!body) return "";
 
   return `
-    <section class="track-dest" aria-label="Delivery destination">
-      <div class="track-dest-heading">
-        <span class="track-dest-icon" aria-hidden="true">${icons.home}</span>
-        <span class="track-dest-label">Delivery to</span>
-      </div>
-      <p class="track-dest-address">${addr.full}</p>
-      ${hdDestinationPromiseHtml()}
+    <section class="rail-card rail-card-compact rail-fulfilment-card" aria-label="Fulfilment">
+      <h2 class="rail-section-title">Fulfilment</h2>
+      ${body}
     </section>`;
 }
 
-/**
- * Order information rail destination — Collect from / Delivery / both.
- */
-function orderInformationDestinationHtml() {
-  const kinds = orderFulfilmentKinds();
-  const hasCnc = kinds.has("CNC");
-  const hasHd = kinds.has("HD");
-  const cncSeller = firstCncSeller();
-  const store = resolveCollectionStore(cncSeller, cncSeller?.shipments?.[0]);
-  const addr = deliveryAddressLines();
-
-  if (hasCnc && hasHd) {
-    return `
-      <h3 class="rail-subhead rail-subhead-first">Fulfilment</h3>
-      <div class="rail-fulfilment-block">
-        <p class="rail-fulfilment-title">
-          <span class="rail-case-icon" aria-hidden="true">${icons.store}</span>
-          Collect from — ${collectionStorePrimaryName(store) || "Click &amp; Collect"}
-        </p>
-        <p class="rail-contact">${
-          store?.id ? `Store ${store.id} · Click &amp; Collect` : "Click &amp; Collect"
-        }</p>
-      </div>
-      <div class="rail-fulfilment-block">
-        <p class="rail-fulfilment-title">
-          <span class="rail-case-icon" aria-hidden="true">${icons.truck}</span>
-          Delivery to
-        </p>
-        <div class="rail-address rail-copy-row">
-          <p>${addr.street}${addr.locality ? `<br>${addr.locality}` : ""}</p>
-          ${copyControl(addr.full, "delivery address")}
-        </div>
-      </div>`;
+/** Tender label for refund destination — Visa ···· 1234. */
+function refundPaymentDestinationLabel() {
+  if (order.paymentLast4) {
+    return `${order.paymentMethod || "Card"} ···· ${order.paymentLast4}`;
   }
+  return order.paymentMethod || "original payment method";
+}
 
-  if (hasCnc && store) {
-    return `
-      <h3 class="rail-subhead rail-subhead-first">Collect from</h3>
-      <p class="rail-identity">${collectionStorePrimaryName(store)}</p>
-      ${
-        store.address
-          ? `<div class="rail-address rail-copy-row">
-              <p>${store.address}</p>
-              ${copyControl(store.address, "store address")}
-            </div>`
-          : ""
-      }
-      <p class="rail-contact">${
-        store.id ? `Store ${store.id} · Click &amp; Collect` : "Click &amp; Collect"
-      }</p>`;
-  }
-
-  return `
-    <h3 class="rail-subhead rail-subhead-first">Delivery</h3>
-    <div class="rail-address rail-copy-row">
-      <p>${addr.street}${addr.locality ? `<br>${addr.locality}` : ""}</p>
-      ${copyControl(addr.full, "delivery address")}
-    </div>`;
+function refundReadyToSubmit(summary = refundSelectionSummary()) {
+  const shippingOk =
+    !state.refund.shippingSelected || !state.refund.shippingAmountError;
+  return shippingOk && (summary.units > 0 || summary.charges > 0);
 }
 
 function servicingCaseRailHtml() {
   const linked = linkedCase();
   if (linked) {
     return `
-      <section class="rail-card rail-card-compact rail-case-card is-linked" aria-label="Current case">
-        <h2 class="rail-section-title">Current case</h2>
+      <section class="rail-card rail-card-compact rail-case-card is-linked" aria-label="Case">
+        <h2 class="rail-section-title">Case</h2>
         <p class="rail-case-id">
+          <span class="rail-case-icon" aria-hidden="true">${icons.caseLink}</span>
           <button
             type="button"
             class="rail-case-id-link"
@@ -2450,60 +4066,136 @@ function servicingCaseRailHtml() {
             data-case="${linked.id}"
             title="View case #${linked.id}"
           >Case #${linked.id}</button>
+          <span class="rail-case-linked-tag">· Linked</span>
+          ${copyControl(linked.id, "case number")}
         </p>
         <p class="rail-case-meta">${linked.topic} · ${linked.state}</p>
-        <p class="rail-case-note">Guide actions will be added to this case.</p>
         <p class="rail-case-actions">
-          <button type="button" class="rail-context-link" data-action="change-linked-case">Switch case</button>
+          <button type="button" class="rail-context-link is-primary" data-action="update-case">View / update case</button>
+          <span class="rail-context-sep" aria-hidden="true">·</span>
+          <button type="button" class="rail-context-link is-secondary" data-action="change-linked-case">Switch</button>
           <span class="rail-context-sep" aria-hidden="true">·</span>
           <button type="button" class="rail-context-link is-quiet" data-action="unlink-case">Unlink</button>
         </p>
       </section>`;
   }
 
+  const latest = state.lastClosedCase;
+  const evidence = caseLinkEvidence();
+
+  if (evidence.level === "order" || evidence.level === "recent") {
+    const n = evidence.count;
+    const multi = n > 1;
+    const c = evidence.primary;
+    const statusLabel =
+      n === 1
+        ? "1 possible case match found"
+        : `${n} possible case matches found`;
+    const recency = caseRecencyShort(c);
+    const detail = multi
+      ? recency
+        ? `<p class="rail-case-evidence-meta-line">Most recently updated ${recency}</p>`
+        : ""
+      : c
+        ? `<div class="rail-case-evidence-block">
+            <p class="rail-case-evidence-ref">
+              <button
+                type="button"
+                class="rail-case-id-link"
+                data-action="view-case"
+                data-case="${c.id}"
+                title="View case #${c.id}"
+              >Case #${c.id}</button>
+              <span class="rail-case-evidence-meta"> · ${c.topic}</span>
+            </p>
+            <p class="rail-case-evidence-meta-line">Open${
+              recency ? ` · ${c.when || `Updated ${recency}`}` : ""
+            }</p>
+          </div>`
+        : "";
+    const reviewLabel = multi
+      ? `Review ${n} matches`
+      : "Review &amp; link";
+
+    return `
+      <section class="rail-card rail-card-compact rail-case-card is-evidence-${evidence.level}" aria-label="Case">
+        <h2 class="rail-section-title">Case</h2>
+        <p class="rail-case-status">${statusLabel}</p>
+        ${detail}
+        <div class="rail-case-cta">
+          <button type="button" class="btn btn-outline rail-case-review-btn" data-action="open-link-case">${reviewLabel}</button>
+          <button type="button" class="rail-context-link is-secondary" data-action="create-case">Create new case</button>
+        </div>
+      </section>`;
+  }
+
   return `
     <section class="rail-card rail-card-compact rail-case-card is-unlinked" aria-label="Case">
       <h2 class="rail-section-title">Case</h2>
-      <p class="rail-case-status">
-        <span class="rail-case-icon" aria-hidden="true">${icons.caseLink}</span>
-        No case linked
-      </p>
-      <p class="rail-case-note">Your next servicing action will create a new case.</p>
-      <p class="rail-context-links">
-        <button type="button" class="rail-context-link" data-action="open-link-case">Link existing case →</button>
+      <p class="rail-case-status">No case linked</p>
+      ${
+        latest
+          ? `<div class="rail-latest-case">
+              <p class="rail-latest-case-label">Latest case</p>
+              <p class="rail-latest-case-id">
+                <button
+                  type="button"
+                  class="rail-case-id-link"
+                  data-action="view-case"
+                  data-case="${latest.id}"
+                  title="View case #${latest.id}"
+                >Case #${latest.id}</button>
+                <span class="rail-latest-case-state">· Closed</span>
+              </p>
+              <p class="rail-latest-case-note">Resolved during this interaction.</p>
+            </div>`
+          : ""
+      }
+      <p class="rail-case-actions">
+        <button type="button" class="rail-context-link is-primary" data-action="create-case">Create case</button>
+        <span class="rail-context-sep" aria-hidden="true">·</span>
+        <button type="button" class="rail-context-link is-secondary" data-action="open-link-case">Link existing case</button>
       </p>
     </section>`;
 }
 
-function contextRail() {
-  const channel =
-    order.source === "web"
-      ? "Web"
-      : String(order.source || "").replace(/^\w/, (c) => c.toUpperCase());
+function contextRail({
+  omitCase = false,
+  omitFulfilment = false,
+  omitCustomerHistory = false,
+} = {}) {
   const onePass = onePassMemberHtml();
   const match = customer.profileMatch || "matched";
 
   let customerHistory = "";
-  if (match === "unmatched") {
-    customerHistory = `<p class="rail-profile-note">No matched customer profile — order and case history aren't available.</p>`;
-  } else {
-    const caution =
-      match === "ambiguous"
-        ? `<p class="rail-profile-note">Multiple profiles could match this customer. Confirm identity before using history.</p>`
-        : "";
-    customerHistory = `
+  if (!omitCustomerHistory) {
+    if (match === "unmatched") {
+      customerHistory = `<p class="rail-profile-note">No matched customer profile — order and case history aren't available.</p>`;
+    } else {
+      const caution =
+        match === "ambiguous"
+          ? `<p class="rail-profile-note">Multiple profiles could match this customer. Confirm identity before using history.</p>`
+          : "";
+      customerHistory = `
       ${caution}
-      <p class="rail-context-links">
-        <button type="button" class="rail-context-link" data-action="open-customer-orders">Recent orders</button>
+      <p class="rail-context-links rail-nav-links">
+        <button type="button" class="rail-context-link is-nav" data-action="open-customer-orders">Recent orders</button>
         <span class="rail-context-sep" aria-hidden="true">·</span>
-        <button type="button" class="rail-context-link" data-action="open-customer-cases">Case history</button>
+        <button type="button" class="rail-context-link is-nav" data-action="open-customer-cases">Case history</button>
       </p>`;
+    }
+  } else if (match === "ambiguous") {
+    customerHistory = `<p class="rail-profile-note">Multiple profiles could match this customer. Confirm identity before creating a case.</p>`;
   }
+
+  const customerHighlight =
+    state.aiThreeStepPreVerified && state.preVerifyAttention === "active"
+      ? " is-verify-highlight"
+      : "";
 
   return `
     <aside class="context-rail" aria-label="Order context">
-      ${servicingCaseRailHtml()}
-      <section class="rail-card rail-card-compact rail-customer-card">
+      <section class="rail-card rail-card-compact rail-customer-card${customerHighlight}">
         <h2 class="rail-section-title">Customer</h2>
         <div class="rail-customer-identity">
           <p class="rail-identity">
@@ -2514,7 +4206,7 @@ function contextRail() {
         </div>
         <div class="rail-customer-contact">
           <p class="rail-contact rail-copy-row">
-            <a href="#" onclick="return false">${customer.email}</a>
+            <a class="rail-contact-action" href="#" onclick="return false">${customer.email}</a>
             ${copyControl(customer.email, "email")}
           </p>
           <p class="rail-contact rail-copy-row">
@@ -2528,26 +4220,28 @@ function contextRail() {
             : ""
         }
       </section>
-
-      <section class="rail-card rail-card-compact">
-        <h2 class="rail-section-title">Order information</h2>
-
-        ${orderInformationDestinationHtml()}
-
-        <h3 class="rail-subhead">Payment</h3>
-        <p class="rail-contact">${order.paymentMethod} ···· ${order.paymentLast4}</p>
-
-        <h3 class="rail-subhead">Order source</h3>
-        <p class="rail-contact">${channel}</p>
-      </section>
+      ${omitCase ? "" : servicingCaseRailHtml()}
+      ${omitFulfilment ? "" : fulfilmentContextRailHtml()}
     </aside>`;
 }
 
-function workspace(mainHtml, { showRail = false } = {}) {
+function workspace(
+  mainHtml,
+  {
+    showRail = false,
+    omitCase = false,
+    omitFulfilment = false,
+    omitCustomerHistory = false,
+  } = {}
+) {
   return `
     <div class="workspace ${showRail ? "workspace-with-rail" : "workspace-main-only"}">
       <div class="workspace-main">${mainHtml}</div>
-      ${showRail ? contextRail() : ""}
+      ${
+        showRail
+          ? contextRail({ omitCase, omitFulfilment, omitCustomerHistory })
+          : ""
+      }
     </div>`;
 }
 
@@ -2700,28 +4394,59 @@ function recentOrdersDrawerHtml() {
 function recentCasesDrawerHtml() {
   const email = customerProfileEmail();
   const linkMode = state.customerDrawer === "link-case";
-  const label = linkMode ? "Choose a case" : "Case history";
+  const evidence = caseLinkEvidence();
+  const linked = linkedCase();
+  const reviewingMatches =
+    linkMode &&
+    !linked &&
+    (evidence.level === "order" || evidence.level === "recent");
+  const label = linkMode
+    ? reviewingMatches
+      ? evidence.count > 1
+        ? "Review matches"
+        : "Review case"
+      : linked
+        ? "Switch case"
+        : "Choose a case"
+    : "Case history";
   if (!email) return customerContextUnavailableHtml(linkMode ? "link-case" : "cases", label);
 
   const name = customer.name || "Customer";
-  const linked = linkedCase();
   const openRows = [];
+  const orderOpenRows = [];
   const closedRows = [];
+  const orderCaseIds = new Set(openCasesForOrder(order.id).map((c) => c.id));
+  const casesToList = reviewingMatches
+    ? evidence.cases
+    : customerRecentCases;
 
-  for (const c of customerRecentCases) {
+  for (const c of casesToList) {
+    const forThisOrder = c.orderId === order.id;
     const orderLine = c.orderId
-      ? `<div class="customer-case-order">Order ${c.orderId}</div>`
+      ? `<div class="customer-case-order${forThisOrder ? " is-this-order" : ""}">${
+          forThisOrder ? "This order" : `Order ${c.orderId}`
+        }</div>`
       : "";
     const isLinked = state.linkedCaseId === c.id;
 
     if (linkMode) {
       if (c.open && c.linkable !== false) {
-        openRows.push(`
-          <div class="customer-case-card is-open${isLinked ? " is-linked" : ""}">
-            <div class="customer-case-state">Open · ${c.topic}</div>
+        const recencyLine = c.when
+          ? `<div class="customer-case-when">Open · ${c.when}</div>`
+          : `<div class="customer-case-when">Open</div>`;
+        const card = `
+          <div class="customer-case-card is-open${isLinked ? " is-linked" : ""}${
+            forThisOrder ? " is-order-match" : ""
+          }">
+            ${
+              forThisOrder && !reviewingMatches
+                ? `<div class="customer-case-order-badge">Open for this order</div>`
+                : ""
+            }
             <div class="customer-case-id">Case #${c.id}</div>
+            <div class="customer-case-state">${c.topic}</div>
             ${orderLine}
-            <div class="customer-case-when">${c.when}</div>
+            ${recencyLine}
             ${
               isLinked
                 ? `<div class="customer-case-assoc">
@@ -2731,10 +4456,12 @@ function recentCasesDrawerHtml() {
                     </span>
                     <button type="button" class="customer-case-unlink" data-action="unlink-case">Unlink</button>
                   </div>`
-                : `<button type="button" class="btn btn-md btn-primary customer-case-link-btn" data-action="link-case" data-case="${c.id}">Link case</button>`
+                : `<button type="button" class="btn btn-md btn-primary customer-case-link-btn" data-action="link-case" data-case="${c.id}">Link this case</button>`
             }
-          </div>`);
-      } else {
+          </div>`;
+        if (orderCaseIds.has(c.id)) orderOpenRows.push(card);
+        else openRows.push(card);
+      } else if (!reviewingMatches) {
         closedRows.push(`
           <div class="customer-case-card is-closed" aria-disabled="true">
             <div class="customer-case-state">Closed · ${c.topic}</div>
@@ -2753,7 +4480,9 @@ function recentCasesDrawerHtml() {
     const card = `
       <button
         type="button"
-        class="customer-case-card${c.open ? " is-open" : " is-closed"}"
+        class="customer-case-card${c.open ? " is-open" : " is-closed"}${
+          forThisOrder && c.open ? " is-order-match" : ""
+        }"
         data-action="view-case"
         data-case="${c.id}"
       >
@@ -2763,10 +4492,13 @@ function recentCasesDrawerHtml() {
         <div class="customer-case-when">${c.when}</div>
         ${view}
       </button>`;
-    if (c.open) openRows.push(card);
-    else closedRows.push(card);
+    if (c.open) {
+      if (orderCaseIds.has(c.id)) orderOpenRows.push(card);
+      else openRows.push(card);
+    } else closedRows.push(card);
   }
 
+  const allOpenRows = [...orderOpenRows, ...openRows];
   const linkActionNoun =
     state.view === "refund"
       ? "this refund"
@@ -2776,29 +4508,40 @@ function recentCasesDrawerHtml() {
   const intro = linkMode
     ? linked
       ? `<p class="customer-drawer-count">Currently linked: Case #${linked.id}. Select another case to switch, or unlink the current case.</p>`
-      : `<p class="customer-drawer-count">Select an open case to link to ${linkActionNoun}.</p>`
+      : reviewingMatches
+        ? `<p class="customer-drawer-count">${evidence.count} possible case match${
+            evidence.count === 1 ? "" : "es"
+          } found</p>
+           <p class="customer-drawer-help">Check whether one belongs to ${linkActionNoun} before creating another case.</p>`
+        : `<p class="customer-drawer-count">Select an open case to link to ${linkActionNoun}.</p>`
     : "";
   const ambiguousNote =
     customer.profileMatch === "ambiguous"
       ? `<p class="customer-drawer-caution">Profile match is ambiguous — confirm ${email} before linking a case.</p>`
       : "";
 
-  const sections = `
-    ${openRows.length ? `<div class="customer-case-group"><h3 class="customer-case-group-title">Open</h3><div class="customer-case-list">${openRows.join("")}</div></div>` : ""}
+  const sections = reviewingMatches
+    ? `<div class="customer-case-list">${allOpenRows.join("")}</div>`
+    : `
+    ${allOpenRows.length ? `<div class="customer-case-group"><h3 class="customer-case-group-title">Open</h3><div class="customer-case-list">${allOpenRows.join("")}</div></div>` : ""}
     ${closedRows.length ? `<div class="customer-case-group"><h3 class="customer-case-group-title">Closed</h3><div class="customer-case-list">${closedRows.join("")}</div></div>` : ""}
   `;
 
+  const footer = linkMode
+    ? reviewingMatches
+      ? `<button type="button" class="linkish" data-action="create-case">Create new case instead</button>`
+      : ""
+    : `<button type="button" class="linkish" data-action="view-all-cases">View all cases</button>`;
+
   return customerDrawerShell(
     linkMode ? "link-case" : "cases",
-    linkMode ? `Choose a case — ${name}` : `Case history — ${name}`,
+    linkMode ? `${label} — ${name}` : `Case history — ${name}`,
     `
       ${ambiguousNote}
       ${intro}
       ${sections}
     `,
-    linkMode
-      ? ""
-      : `<button type="button" class="linkish" data-action="view-all-cases">View all cases</button>`,
+    footer,
     { subtitle: email }
   );
 }
@@ -3082,6 +4825,34 @@ function serviceLabel(method) {
   return `${method} delivery`;
 }
 
+/** Detail view — ship-from / collection context · service. */
+function shipmentDetailMetaHtml(ship, seller) {
+  const parts = [];
+  const store = storeMeta(ship, seller);
+  if (store) parts.push(store);
+  const service = serviceLabel(ship.shippingMethod);
+  if (service) parts.push(`<span>${service}</span>`);
+  return parts.join(`<span class="meta-sep" aria-hidden="true">·</span>`);
+}
+
+/**
+ * Track execution line — service · carrier.
+ * CNC keeps collection store first; HD omits ship-from so the line stays execution-focused.
+ */
+function shipmentTrackMetaHtml(ship, seller, { includeCarrier = true, carrierName = "" } = {}) {
+  const parts = [];
+  if (isClickCollectFulfilment(seller, ship)) {
+    const store = storeMeta(ship, seller);
+    if (store) parts.push(store);
+  }
+  const service = serviceLabel(ship.shippingMethod);
+  if (service) parts.push(`<span>${service}</span>`);
+  if (includeCarrier && carrierName) {
+    parts.push(`<span>${carrierName}</span>`);
+  }
+  return parts.join(`<span class="meta-sep" aria-hidden="true">·</span>`);
+}
+
 function storeMeta(ship, seller = null) {
   if (ship.storeLabel) {
     return `<span class="ship-store">${icons.store} ${ship.storeLabel}</span>`;
@@ -3097,6 +4868,107 @@ function storeMeta(ship, seller = null) {
     return `<a class="ship-store" href="#" onclick="return false">${icons.store} Store ${ship.store}</a>`;
   }
   return "";
+}
+
+/** HD store id for sold-by meta — first non-marketplace ship store, else shipFrom. */
+function sellerHdStoreId(seller) {
+  for (const ship of seller.shipments || []) {
+    if (ship.store && ship.store !== "MP") return String(ship.store);
+  }
+  const from = String(seller.shipFrom || "");
+  const m = from.match(/\b(\d{3,})\b/);
+  return m ? m[1] : "";
+}
+
+function sellerStoreMetaBit(seller) {
+  if (fulfilmentKind(seller.delivery) === "CNC") {
+    const store = resolveCollectionStore(seller, seller.shipments?.[0] || null);
+    return store ? ` · ${collectionStoreCompactLabel(store)}` : "";
+  }
+  const id = sellerHdStoreId(seller);
+  return id ? ` · Store ${id}` : "";
+}
+
+/** Day range for seller promise — 23–25 Sep or 30 Sep–2 Oct. */
+function formatEtaDayRange(startMs, endMs) {
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  const a = new Date(startMs);
+  const b = new Date(endMs);
+  if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear()) {
+    return `${a.getDate()}–${b.getDate()} ${months[a.getMonth()]}`;
+  }
+  return `${a.getDate()} ${months[a.getMonth()]}–${b.getDate()} ${months[b.getMonth()]}`;
+}
+
+/**
+ * Seller-level promised delivery window (sold-by), distinct from shipment
+ * tracking performance. Spans shipment SLA windows; CNC uses collect-by / ready.
+ * @returns {{ label: string, value: string } | null}
+ */
+function sellerPromisedEta(seller) {
+  let minStart = null;
+  let maxEnd = null;
+  const labels = [];
+  for (const ship of seller.shipments || []) {
+    const sla = ship.sla;
+    if (!sla) continue;
+    if (sla.label) labels.push(String(sla.label));
+    if (sla.expectedStart) {
+      const raw = String(sla.expectedStart);
+      const t = Date.parse(
+        raw.length <= 10 ? `${raw}T12:00:00+10:00` : raw
+      );
+      if (Number.isFinite(t)) {
+        minStart = minStart == null ? t : Math.min(minStart, t);
+      }
+    }
+    if (sla.expectedEnd) {
+      const t = Date.parse(sla.expectedEnd);
+      if (Number.isFinite(t)) {
+        maxEnd = maxEnd == null ? t : Math.max(maxEnd, t);
+      }
+    }
+  }
+  if (minStart != null && maxEnd != null) {
+    return { label: "ETA", value: formatEtaDayRange(minStart, maxEnd) };
+  }
+  const uniq = [...new Set(labels)];
+  if (uniq.length === 1) return { label: "ETA", value: uniq[0] };
+  if (uniq.length > 1) {
+    return { label: "ETA", value: `${uniq[0]} · ${uniq[uniq.length - 1]}` };
+  }
+
+  if (fulfilmentKind(seller.delivery) === "CNC") {
+    const ship = seller.shipments?.[0];
+    if (ship?.collectBy) {
+      const short = formatAuDateShort(ship.collectBy);
+      return short ? { label: "Collect by", value: short } : null;
+    }
+    if (ship?.readyAt) {
+      const short = formatAuDateShort(ship.readyAt);
+      return short ? { label: "Ready", value: short } : null;
+    }
+  }
+  return null;
+}
+
+function sellerPromisedEtaHtml(seller) {
+  const eta = sellerPromisedEta(seller);
+  if (!eta) return "";
+  return `<p class="seller-eta"><span class="seller-eta-label">${eta.label}</span> <span class="seller-eta-value">${eta.value}</span></p>`;
 }
 
 function formatLastMileWhen(timestamp) {
@@ -3314,7 +5186,7 @@ function shipmentTrackPanel(ship, seller, display) {
     return `
       <div class="ship-track-enhance">
         ${carrierEvidence(ship, shippit, mapped, tracking, sla)}
-        ${trackExceptionPanel(mapped, { shippit, tracking })}
+        ${trackExceptionPanel(mapped, { shippit, tracking, ship })}
         ${
           mapped?.kind !== "exception" && mapped?.kind !== "terminal"
             ? trackSlaPanel(sla, mapped, ship)
@@ -3418,7 +5290,7 @@ function journeyIndicator(shippit, sla = null) {
     aria = "Delivery complete";
   } else if (sla?.investigate) {
     tone = "delayed";
-    aria = "Relative progress · shipment needs investigation";
+    aria = "Relative progress · shipment is significantly delayed";
   } else if (sla?.outside) {
     tone = "delayed";
     aria = "Relative progress · outside expected delivery timeframe";
@@ -3530,7 +5402,7 @@ function formatHoursAgo(hours) {
 
 /**
  * Guide assessment facts: shipment clock + calculated expected window.
- * Destination-level Standard delivery 3–5 lives on the page strip — do not repeat here.
+ * Seller-level promised ETA lives on the sold-by header — do not repeat Metro/service here.
  */
 function slaAssessmentFacts(ship, sla) {
   const expected =
@@ -3555,8 +5427,9 @@ function slaAssessmentFacts(ship, sla) {
 
 /**
  * Guide helper after carrier evidence — interprets promise vs elapsed vs carrier activity.
- * Green = within · Amber delayed = still moving · Amber investigate = stale + overdue.
+ * Green = within · Amber delayed = still moving · Amber significant = stale + overdue.
  * Delivered uses the pathway panel instead (no elapsed clock).
+ * Does not prescribe investigation — only describes evidence and eligible resolutions.
  */
 function trackSlaPanel(sla, mapped, ship) {
   if (!sla || !mapped?.calculateDelay) return "";
@@ -3569,13 +5442,11 @@ function trackSlaPanel(sla, mapped, ship) {
     return `
       <div class="track-callout track-callout-warn track-callout-decision">
         <div class="track-callout-body">
-          <strong>⚠ Shipment needs investigation</strong>
+          <strong>⚠ Shipment is significantly delayed</strong>
           ${factsLine}
           <p>No meaningful carrier update for more than 48 hours.</p>
         </div>
-        <div class="track-actions">
-          ${trackCaseActionButtonHtml()}
-        </div>
+        ${trackSignificantDelayActionsHtml(ship)}
       </div>`;
   }
 
@@ -3583,7 +5454,9 @@ function trackSlaPanel(sla, mapped, ship) {
     const updated = formatHoursAgo(sla.hoursSinceMeaningful);
     const action = sla.shippingPaid
       ? `<div class="track-actions">
-          <button type="button" class="btn btn-md btn-primary" data-action="refund-shipping">Refund shipping</button>
+          <button type="button" class="btn btn-md btn-primary" data-action="refund-shipping" data-ship="${
+            ship?.id || ""
+          }">Refund shipping</button>
         </div>`
       : "";
     return `
@@ -3611,7 +5484,10 @@ function trackSlaPanel(sla, mapped, ship) {
     </div>`;
 }
 
-function trackExceptionPanel(mapped, { shippit = null, tracking = null } = {}) {
+function trackExceptionPanel(
+  mapped,
+  { shippit = null, tracking = null, ship = null } = {}
+) {
   if (!mapped || (mapped.kind !== "exception" && mapped.kind !== "terminal")) return "";
   if (mapped.pathway === "delivered") {
     const podCta = shippit?.trackingUrl
@@ -3636,14 +5512,23 @@ function trackExceptionPanel(mapped, { shippit = null, tracking = null } = {}) {
         </div>
       </div>`;
   }
-  if (mapped.pathway === "lost" || mapped.pathway === "damaged") {
+  if (mapped.pathway === "lost") {
+    return `
+      <div class="track-callout track-callout-warn track-callout-decision">
+        <div class="track-callout-body">
+          <strong>⚠ Shipment appears lost in transit</strong>
+          <p>${mapped.explanation}</p>
+        </div>
+        ${trackSignificantDelayActionsHtml(ship)}
+      </div>`;
+  }
+  if (mapped.pathway === "damaged") {
     return `
       <div class="track-callout track-callout-warn track-callout-decision">
         <div class="track-callout-body">
           <strong>${mapped.label}</strong>
           <p>${mapped.explanation}</p>
         </div>
-        <div class="track-actions">${trackCaseActionButtonHtml()}</div>
       </div>`;
   }
   if (mapped.kind === "exception") {
@@ -3671,7 +5556,7 @@ function attentionReasonLabel(signals) {
   ) {
     return signals.collectionWindow.line;
   }
-  if (signals.sla?.investigate) return "Needs investigation";
+  if (signals.sla?.investigate) return "Significantly delayed";
   if (signals.sla?.outside) return "Delivery delayed";
   if (signals.exception && signals.mapped?.label) return signals.mapped.label;
   return "Needs attention";
@@ -3832,9 +5717,7 @@ function shipmentBlock(
             ${statusBadge(display.label)}
           </div>
           <div class="ship-meta">
-            ${storeMeta(ship, seller)}
-            <span class="meta-sep" aria-hidden="true">·</span>
-            <span>${serviceLabel(ship.shippingMethod)}</span>
+            ${shipmentDetailMetaHtml(ship, seller)}
           </div>
         </div>
         ${packagesHtml}
@@ -3855,16 +5738,13 @@ function shipmentBlock(
           <div class="ship-title-row">
             <h3>${ship.label}</h3>
             ${hideHeaderStatus ? "" : statusBadge(display.label)}
+            ${shipmentPackageCountHtml(pkgTotal)}
           </div>
           <div class="ship-meta">
-            ${storeMeta(ship, seller)}
-            <span class="meta-sep" aria-hidden="true">·</span>
-            <span>${serviceLabel(ship.shippingMethod)}</span>
-            ${
-              showCarrierInMeta && carrierName
-                ? `<span class="meta-sep" aria-hidden="true">·</span><span>${carrierName}</span>`
-                : ""
-            }
+            ${shipmentTrackMetaHtml(ship, seller, {
+              includeCarrier: showCarrierInMeta,
+              carrierName,
+            })}
           </div>
         </div>
         <div class="ship-header-controls">
@@ -3873,7 +5753,6 @@ function shipmentBlock(
               ? shipAttentionAssessment(signals.attentionReason)
               : ""
           }
-          ${expanded ? "" : packageCountIcon(pkgTotal)}
           ${
             collapsible
               ? `<span class="ship-chevron" aria-hidden="true">${chevron}</span>`
@@ -3926,13 +5805,8 @@ function sellerBlock(
   const detailMode = !refundMode && !trackMode;
   const collapsed = isSellerCollapsed(seller, { collapsible, trackMode });
   const attention = trackMode && sellerHasAttention(seller);
-  const collectionStore = resolveCollectionStore(
-    seller,
-    seller.shipments[0] || null
-  );
-  const storeBit = collectionStore
-    ? ` · ${collectionStoreCompactLabel(collectionStore)}`
-    : "";
+  const storeBit = sellerStoreMetaBit(seller);
+  const etaHtml = sellerPromisedEtaHtml(seller);
 
   const meta = detailMode
     ? `${itemTotal} unit${itemTotal === 1 ? "" : "s"} · ${money(seller.merchandiseTotal)} · ${fulfilmentLabel(seller.delivery)}${storeBit}`
@@ -3967,6 +5841,7 @@ function sellerBlock(
         }
       </div>
       <div class="seller-meta">${meta}</div>
+      ${etaHtml}
     </div>
     ${
       collapsible
@@ -4029,6 +5904,11 @@ function totals({ refundMode = false } = {}) {
             .join("")}
         </ul>
         <div class="totals-row grand"><span>Refund total</span><span>${money(amount)}</span></div>
+        <div class="totals-row refund-destination">
+          <span>Refund to</span>
+          <span>${refundPaymentDestinationLabel()}</span>
+        </div>
+        ${reviewCaseDestinationHtml()}
       </section>`;
   }
 
@@ -4105,10 +5985,21 @@ function refundHistorySection() {
     </section>`;
 }
 
-function renderDetail() {
+/**
+ * Order detail/track shell — hero then workspace.
+ * Verification toast anchors to the Customer card in the rail.
+ */
+function orderStageHtml(afterHeroHtml) {
   return `
-    ${hero({ showActionsMenu: true })}
-    ${workspace(
+    <div class="order-stage">
+      ${hero({ showActionsMenu: true })}
+      ${afterHeroHtml}
+    </div>`;
+}
+
+function renderDetail() {
+  return orderStageHtml(
+    workspace(
       `
       ${sellersSection({ refundMode: false, collapsible: true })}
       ${totals()}
@@ -4116,7 +6007,8 @@ function renderDetail() {
       ${orderActionsPanel()}
     `,
       { showRail: true }
-    )}`;
+    )
+  );
 }
 
 /**
@@ -4253,28 +6145,31 @@ function renderOrderSearch() {
 }
 
 function renderTrack() {
-  return `
-    ${hero({ showActionsMenu: true })}
-    ${workspace(`
-      ${deliveryDestinationStrip()}
+  return orderStageHtml(
+    workspace(
+      `
       ${sellersSection({ trackMode: true, collapsible: true })}
       ${totals()}
       ${orderActionsPanel()}
-    `)}`;
+    `,
+      { showRail: true }
+    )
+  );
 }
 
 function renderRefund() {
   const summary = refundSelectionSummary();
-  const shippingOk =
-    !state.refund.shippingSelected || !state.refund.shippingAmountError;
-  const canSubmit =
-    shippingOk && (summary.units > 0 || summary.charges > 0);
+  const canSubmit = refundReadyToSubmit(summary);
+  const ctaLabel =
+    summary.units || summary.charges
+      ? `Refund ${money(summary.amount)}`
+      : "Refund";
   return `
-    ${workflowHead({
-      title: `Refund order ${order.id}`,
-      actionLabel: "refund",
-    })}
     ${workspace(`
+      ${workflowHead({
+        title: `Refund — Order ${order.id}`,
+        showCaseCue: false,
+      })}
       <section class="card card-pad refund-build">
         <div class="select-head select-head-inline">
           <div>
@@ -4297,9 +6192,11 @@ function renderRefund() {
 
       ${sellersSection({ refundMode: true })}
       ${totals({ refundMode: true })}
-      <div class="actions">
-        <button class="btn btn-primary" data-action="submit" ${!canSubmit ? "disabled" : ""}>Process refund</button>
+      <div class="actions refund-confirm-actions">
         <button class="btn btn-secondary" data-action="cancel">Cancel</button>
+        <button class="btn btn-primary" data-action="submit" ${
+          !canSubmit ? "disabled" : ""
+        }>${ctaLabel}</button>
       </div>
     `)}`;
 }
@@ -4344,16 +6241,16 @@ function render() {
               ? renderTrack()
               : state.view === "cancel"
                 ? renderCancel()
-                : renderRefund();
+                : state.view === "create-case"
+                  ? renderCreateCase()
+                  : state.view === "create-case-done"
+                    ? renderCreateCaseDone()
+                    : state.view === "damage"
+                      ? damageApi.renderReportDamage()
+                      : renderRefund();
 
     root.innerHTML = `
     <div class="app">
-      <div class="proto-bar">
-        <div>
-          <strong>Team Member order shell — Order search</strong>
-          <p>Search = find order. Order detail / Track shipments = views. Refund · Cancel · Create case = actions.</p>
-        </div>
-      </div>
       ${appShell()}
       <div class="top">
         <div class="crumbs">${crumbs()}</div>
@@ -4372,11 +6269,18 @@ function render() {
     ${customerContextDrawer()}
     ${leaveConfirmDialog()}
     ${unlinkConfirmDialog()}
+    ${createCaseDuplicateDialog()}
+    ${caseNoteDialog()}
     <div class="toast" id="toast">Copied</div>
   `;
     syncIndeterminateCheckboxes(root);
     flushPendingScroll();
-    if (state.customerDrawer) {
+    syncPreVerifyAttentionAfterRender();
+    if (state.caseNoteOpen) {
+      requestAnimationFrame(() => {
+        root.querySelector("#case-note-text")?.focus();
+      });
+    } else if (state.customerDrawer) {
       requestAnimationFrame(() => {
         root.querySelector(".customer-drawer-close")?.focus();
       });
@@ -4393,7 +6297,7 @@ function render() {
 function jumpToRefundHistory() {
   state.actionsMenuOpen = false;
   if (state.view !== "detail") {
-    if (state.view === "refund" || state.view === "cancel") {
+    if (state.view === "refund" || state.view === "cancel" || state.view === "create-case" || state.view === "create-case-done" || state.view === "damage") {
       if (!leaveWorkflow("detail")) return;
     } else {
       state.view = "detail";
@@ -4512,7 +6416,9 @@ function openSelectableOrder(orderId, { preserveLinkedCase = false } = {}) {
   state.leaveConfirm = null;
   state.originView = "detail";
   state.customerDrawer = null;
+  state.createCaseDuplicatePrompt = false;
   if (!preserveLinkedCase) clearLinkedCase();
+  resetPreVerifyAttention();
   return true;
 }
 
@@ -4805,6 +6711,42 @@ function renderOrderHistory() {
 }
 
 const rootEl = document.getElementById("root");
+
+damageApi = bindReportDamage({
+  getState: () => state,
+  money,
+  icons,
+  get customer() {
+    return customer;
+  },
+  get order() {
+    return order;
+  },
+  get lines() {
+    return lines;
+  },
+  get sellers() {
+    return sellers;
+  },
+  shippitByTracking,
+  displayShipmentStatus,
+  statusBadge,
+  copyControl,
+  productThumbHtml,
+  packageHeadingText,
+  storeMeta,
+  serviceLabel,
+  checkboxTriHtml,
+  allocKey,
+  workflowHead,
+  workspace,
+  createAndLinkCase,
+  linkedCase,
+  reviewCaseDestinationHtml,
+  formatPhone: formatHistoryPhone,
+  sellerRefundsInMirakl,
+});
+
 if (rootEl) {
   rootEl.addEventListener("click", (e) => {
     const copyBtn = e.target.closest("[data-copy]");
@@ -4819,12 +6761,14 @@ if (rootEl) {
       e.preventDefault();
       const target = viewBtn.getAttribute("data-view");
       state.actionsMenuOpen = false;
-      if (state.view === "refund" && target !== "refund") {
-        if (leaveRefund(target)) {
-          render();
-          window.scrollTo({ top: 0, behavior: "smooth" });
+      if (state.view === "refund" || state.view === "cancel" || state.view === "create-case" || state.view === "create-case-done" || state.view === "damage") {
+        if (target !== state.view) {
+          if (leaveWorkflow(target)) {
+            render();
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }
+          return;
         }
-        return;
       }
       state.view = target;
       render();
@@ -4836,6 +6780,14 @@ if (rootEl) {
     const action =
       e.target.getAttribute("data-action") ||
       actionEl?.getAttribute("data-action");
+
+    if (action && damageApi.handleDamageAction(action, actionEl, e)) {
+      render();
+      if (action === "report-damage" || action === "damage-done-back") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+      return;
+    }
 
     if (action === "toggle-order-actions") {
       state.actionsMenuOpen = !state.actionsMenuOpen;
@@ -4868,8 +6820,7 @@ if (rootEl) {
     }
     if (action === "open-link-case" || action === "change-linked-case") {
       if ((customer.profileMatch || "matched") === "unmatched") return;
-      state.actionsMenuOpen = false;
-      state.customerDrawer = "link-case";
+      openCaseReviewDrawer();
       console.info("[analytics] open_link_case_drawer", action);
       render();
       return;
@@ -4883,8 +6834,57 @@ if (rootEl) {
         state.customerDrawer = null;
         console.info("[analytics] link_servicing_case", caseId);
         render();
-        showToast(`Linked case #${caseId}`);
+        showToast(
+          `This contact is now associated with Case #${caseId}`
+        );
       }
+      return;
+    }
+    if (action === "update-case" || action === "open-case-note") {
+      const shipId =
+        e.target.getAttribute("data-ship") ||
+        actionEl?.getAttribute("data-ship");
+      if (linkedCase()) {
+        openUpdateCaseComposer();
+        render();
+        return;
+      }
+      /** No case yet — create one first, then it becomes the current case. */
+      const found = shipId ? findShipmentById(shipId) : null;
+      const shipLabel = found?.ship?.label || "Shipment";
+      const tracking = found?.ship
+        ? trackingNumbersForShipment(found.ship)[0]
+        : "";
+      enterCreateCase({
+        type: "delivery",
+        summary: `${shipLabel} significantly delayed${
+          tracking ? ` · ${tracking}` : ""
+        }`,
+        notes: tracking
+          ? `No meaningful carrier update for 48+ hours on ${tracking}.`
+          : "No meaningful carrier update for more than 48 hours.",
+        preselectShipId: shipId || "",
+      });
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      showToast("Create a case to continue managing this shipment");
+      return;
+    }
+    if (action === "case-note-cancel") {
+      state.caseNoteOpen = false;
+      state.caseNoteText = "";
+      render();
+      return;
+    }
+    if (action === "case-note-submit") {
+      const linked = linkedCase();
+      const note = String(state.caseNoteText || "").trim();
+      if (!linked || !note) return;
+      console.info("[analytics] update_case", linked.id, note);
+      state.caseNoteOpen = false;
+      state.caseNoteText = "";
+      render();
+      showToast(`✓ Case #${linked.id} updated`);
       return;
     }
     if (action === "close-customer-drawer") {
@@ -4999,6 +6999,72 @@ if (rootEl) {
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
+    if (action === "start-cancel") {
+      enterCancel();
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "cancel-intent") {
+      const intent =
+        e.target.getAttribute("data-intent") ||
+        actionEl?.getAttribute("data-intent");
+      if (intent !== "entire" && intent !== "lines") return;
+      if (intent === "entire" && !cancelCapability().fullOrder.available) return;
+      if (intent === "lines" && !cancelCapability().lineItems.available) return;
+      state.cancel.intent = intent;
+      if (intent === "entire") state.cancel.items = {};
+      state.cancel.step = "build";
+      render();
+      return;
+    }
+    if (action === "cancel-toggle-item") {
+      const key =
+        e.target.getAttribute("data-key") || actionEl?.getAttribute("data-key");
+      const max = Number(
+        e.target.getAttribute("data-max") ||
+          actionEl?.getAttribute("data-max") ||
+          1
+      );
+      if (!key) return;
+      const on = Number(state.cancel.items[key] || 0) <= 0;
+      setCancelItemQty(key, on ? max : 0, max);
+      render();
+      return;
+    }
+    if (action === "cancel-select-all-eligible") {
+      const cap = cancelCapability();
+      if (cancelSelectedLineUnits() > 0) state.cancel.items = {};
+      else preselectAllEligibleCancelLines(cap);
+      render();
+      return;
+    }
+    if (action === "cancel-review") {
+      if (!cancelBuildReady()) return;
+      state.cancel.step = "review";
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "cancel-back-build") {
+      state.cancel.step = "build";
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "cancel-submit") {
+      if (!cancelBuildReady()) return;
+      const cap = cancelCapability();
+      const label = cancelSubmitLabel(cap);
+      const caseRec = ensureServicingCase({ topic: "Cancellation" });
+      showToast(`${label} recorded on case #${caseRec.id} (prototype)`);
+      resetCancelSelection();
+      state.leaveConfirm = null;
+      state.view = state.originView || "detail";
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
     if (action === "jump-refund-history") {
       jumpToRefundHistory();
       return;
@@ -5050,17 +7116,9 @@ if (rootEl) {
       return;
     }
     if (action === "cancel-items") {
-      state.actionsMenuOpen = false;
-      const caseRec = ensureServicingCase({ topic: "Cancel" });
+      enterCancel();
       render();
-      showToast(`Cancel recorded on case #${caseRec.id} (prototype)`);
-      return;
-    }
-    if (action === "report-damage") {
-      state.actionsMenuOpen = false;
-      const caseRec = ensureServicingCase({ topic: "Damage" });
-      render();
-      showToast(`Damage report recorded on case #${caseRec.id} (prototype)`);
+      window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
     if (action === "dismiss-search-tip") {
@@ -5200,23 +7258,96 @@ if (rootEl) {
     }
     if (action === "create-case") {
       state.actionsMenuOpen = false;
-      /** Always mint a new case — agents may need a separate case even when one is linked. */
-      state.linkedCaseId = null;
-      state.linkedCaseSnapshot = null;
-      const created = ensureServicingCase({ topic: "General" });
-      render();
-      showToast(`Case #${created.id} created and linked`);
-      return;
-    }
-    if (action === "attach-to-linked-case") {
-      const linked = linkedCase();
-      if (!linked) {
-        state.customerDrawer = "link-case";
+      const evidence = caseLinkEvidence();
+      if (evidence.level === "order" && !linkedCase()) {
+        state.createCaseDuplicatePrompt = true;
+        console.info("[analytics] create_case_duplicate_prompt", evidence.primary?.id);
         render();
         return;
       }
-      console.info("[analytics] attach_to_linked_case", linked.id);
-      showToast(`Added to case #${linked.id} · ${linked.topic}`);
+      enterCreateCase();
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "create-case-dup-review") {
+      openCaseReviewDrawer();
+      console.info("[analytics] create_case_dup_review");
+      render();
+      return;
+    }
+    if (action === "create-case-dup-proceed") {
+      state.createCaseDuplicatePrompt = false;
+      enterCreateCase();
+      console.info("[analytics] create_case_dup_proceed");
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "create-case-submit") {
+      const draft = state.createCase;
+      if (!createCaseCanSubmit()) {
+        if (!String(draft.summary || "").trim()) {
+          showToast("Add a case summary");
+        } else if (!String(draft.notes || "").trim()) {
+          showToast("Add notes about this interaction");
+        } else if (draft.scope === "specific") {
+          showToast("Select a shipment or items for this case");
+        }
+        return;
+      }
+      const typeMeta =
+        CASE_TYPES.find((t) => t.id === draft.type) || CASE_TYPES[0];
+      const scope = draft.scope === "specific" ? "specific" : "order";
+      const outcome =
+        draft.outcome === "follow-up" ? "follow-up" : "resolved";
+      const relatedKeys =
+        scope === "specific" ? Object.keys(draft.items || {}) : [];
+      const relatedLineIds = [
+        ...new Set(relatedKeys.map((k) => k.split(":")[1]).filter(Boolean)),
+      ];
+      const created = createAndLinkCase({
+        topic: typeMeta.topic,
+        summary: String(draft.summary || "").trim(),
+        notes: String(draft.notes || "").trim(),
+        scope,
+        outcome,
+        relatedLineIds,
+        relatedKeys,
+      });
+      state.createCaseResult = {
+        id: created.id,
+        topic: created.topic,
+        outcome,
+        orderId: order.id,
+      };
+      resetCreateCaseDraft();
+      state.leaveConfirm = null;
+      state.view = "create-case-done";
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "create-case-done-back") {
+      state.createCaseResult = null;
+      state.leaveConfirm = null;
+      state.view = state.originView || "detail";
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (action === "refund-shipment") {
+      const shipId =
+        e.target.getAttribute("data-ship") ||
+        actionEl?.getAttribute("data-ship");
+      const reason =
+        e.target.getAttribute("data-reason") ||
+        actionEl?.getAttribute("data-reason") ||
+        "Item not received";
+      enterRefund({ preselectShipId: shipId, defaultReason: reason });
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      showToast("Refund lost shipment — items pre-selected");
       return;
     }
     if (action === "refund-shipping") {
@@ -5251,7 +7382,57 @@ if (rootEl) {
     goToDemoOrderFromSearch(path === "customer" ? "customer-details" : "order-number");
   });
 
+  rootEl.addEventListener("input", (e) => {
+    const note = e.target.closest("#case-note-text");
+    if (note) {
+      state.caseNoteText = note.value;
+      const submit = rootEl.querySelector('[data-action="case-note-submit"]');
+      if (submit) submit.disabled = !String(note.value || "").trim();
+      return;
+    }
+    const field = e.target.getAttribute("data-field");
+    if (field === "create-case-summary") {
+      state.createCase.summary = e.target.value;
+      const submit = rootEl.querySelector('[data-action="create-case-submit"]');
+      if (submit) submit.disabled = !createCaseCanSubmit();
+      return;
+    }
+    if (field === "create-case-notes") {
+      state.createCase.notes = e.target.value;
+      const el = e.target;
+      el.style.height = "auto";
+      el.style.height = `${Math.min(Math.max(el.scrollHeight, 52), 160)}px`;
+      const submit = rootEl.querySelector('[data-action="create-case-submit"]');
+      if (submit) submit.disabled = !createCaseCanSubmit();
+      return;
+    }
+    if (field === "cancel-notes") {
+      state.cancel.notes = e.target.value;
+      const review = rootEl.querySelector('[data-action="cancel-review"]');
+      if (review) review.disabled = !cancelBuildReady();
+      return;
+    }
+    if (field === "damage-notes") {
+      state.damage.notes = e.target.value;
+      const notesOk = String(e.target.value || "").trim().length > 0;
+      const req = rootEl.querySelector('[data-action="damage-submit-request"]');
+      const rev = rootEl.querySelector('[data-action="damage-next-review"]');
+      if (req) req.disabled = !notesOk;
+      if (rev) {
+        rev.disabled = !notesOk || !(state.damage.photoCount > 0);
+      }
+      return;
+    }
+  });
+
   rootEl.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.caseNoteOpen) {
+      e.preventDefault();
+      state.caseNoteOpen = false;
+      state.caseNoteText = "";
+      render();
+      return;
+    }
     if (e.key === "Escape" && state.unlinkConfirm) {
       e.preventDefault();
       state.unlinkConfirm = false;
@@ -5325,6 +7506,70 @@ if (rootEl) {
 
   rootEl.addEventListener("change", (e) => {
     const action = e.target.getAttribute("data-action");
+    if (action && damageApi.handleDamageChange(action, e.target, e)) {
+      render();
+      return;
+    }
+    if (action === "cancel-intent") {
+      const intent = e.target.getAttribute("data-intent");
+      if (intent !== "entire" && intent !== "lines") return;
+      if (intent === "entire" && !cancelCapability().fullOrder.available) return;
+      if (intent === "lines" && !cancelCapability().lineItems.available) return;
+      state.cancel.intent = intent;
+      if (intent === "entire") state.cancel.items = {};
+      state.cancel.step = "build";
+      render();
+      return;
+    }
+    if (action === "cancel-reason") {
+      state.cancel.reason = e.target.value;
+      render();
+      return;
+    }
+    if (action === "create-case-type") {
+      const next = e.target.value;
+      const prevHint = CASE_TYPE_SUMMARY_HINTS[state.createCase.type] || "";
+      const currentSummary = String(state.createCase.summary || "").trim();
+      state.createCase.type = next;
+      if (!currentSummary || currentSummary === prevHint) {
+        state.createCase.summary = CASE_TYPE_SUMMARY_HINTS[next] || "";
+      }
+      render();
+      return;
+    }
+    if (action === "create-case-scope") {
+      setCreateCaseScope(e.target.value);
+      render();
+      return;
+    }
+    if (action === "create-case-outcome") {
+      const next = e.target.value;
+      if (next === "resolved" || next === "follow-up") {
+        state.createCase.outcome = next;
+        render();
+      }
+      return;
+    }
+    if (action === "create-case-toggle-item") {
+      const shipId = e.target.getAttribute("data-ship");
+      const lineId = e.target.getAttribute("data-line");
+      if (!shipId || !lineId) return;
+      state.createCase.scope = "specific";
+      const key = createCaseItemKey(shipId, lineId);
+      if (e.target.checked) state.createCase.items[key] = true;
+      else delete state.createCase.items[key];
+      render();
+      return;
+    }
+    if (action === "create-case-toggle-ship") {
+      const shipId = e.target.getAttribute("data-ship");
+      const found = findShipmentById(shipId);
+      if (!found) return;
+      state.createCase.scope = "specific";
+      setCreateCaseShipmentSelected(found.ship, !!e.target.checked);
+      render();
+      return;
+    }
     if (action === "refund-default-reason") {
       state.refund.defaultReason = e.target.value;
       /** Drop overrides that now match the new default. */

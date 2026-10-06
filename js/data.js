@@ -176,6 +176,10 @@ const shipToBase = {
   address: "690 Springvale Rd, Mulgrave VIC 3170",
   /** Shipping Region tool result for this postcode (3170). */
   region: "Metro",
+  /** Customer delivery instruction — attribute, not a success state. */
+  authorityToLeave: true,
+  /** Actual customer ATL instruction from the order — omit when none. */
+  authorityToLeaveNote: "Leave in a safe location",
 };
 
 /**
@@ -441,7 +445,14 @@ const hdSellers = [
             index: 1,
             status: "Shipped",
             tracking: "AU88291001",
-            allocations: [{ lineId: "tramp", qtyInPackage: 1 }],
+            /** Cancel matrix demo — line status for Guide; OMS ship status stays Shipped for Track. */
+            allocations: [
+              {
+                lineId: "tramp",
+                qtyInPackage: 1,
+                fulfillmentStatus: "Ready for Picking",
+              },
+            ],
           },
         ],
       },
@@ -451,15 +462,15 @@ const hdSellers = [
         releaseId: "4519906123",
         store: "1014",
         itemCount: 1,
-        /** OMS fulfilment — Shipped; Track shows In transit + Needs investigation */
-        status: "Shipped",
+        /** Early fulfilment — Cancel can still take this line. */
+        status: "Allocated",
         shippingMethod: "Standard",
         tracked: true,
         trackingNumber: "AU99340122",
         shippedAt: "2026-09-15T09:40:00+10:00",
         total: 7.0,
         /**
-         * Outside SLA >48h and stale carrier scans (>48h) → investigate pathway.
+         * Outside SLA >48h and stale carrier scans (>48h) → significant-delay pathway.
          * Contrast with Ship 2 (delayed but still moving).
          */
         sla: {
@@ -474,7 +485,14 @@ const hdSellers = [
             index: 1,
             status: "Shipped",
             tracking: "AU99340122",
-            allocations: [{ lineId: "notebook", qtyInPackage: 1 }],
+            /** Cancel matrix demo — early status still allows line cancel. */
+            allocations: [
+              {
+                lineId: "notebook",
+                qtyInPackage: 1,
+                fulfillmentStatus: "Allocated",
+              },
+            ],
           },
         ],
       },
@@ -509,6 +527,12 @@ const hdSellers = [
         /** OMS dispatch timestamp — used for business-day age in standard tracking. */
         shippedAt: "2026-09-24T16:05:00+10:00",
         total: 36.0,
+        sla: {
+          expectedStart: "2026-09-24",
+          expectedEnd: "2026-09-27T23:59:59+10:00",
+          label: "24–27 Sep",
+          shippingPaid: false,
+        },
         packages: [
           {
             id: "target-s1-p1",
@@ -561,6 +585,12 @@ const hdSellers = [
           "https://auspost.com.au/mypost/track/details/AU44910283",
         shippedAt: "2026-09-24T11:20:00+10:00",
         total: 49.0,
+        sla: {
+          expectedStart: "2026-09-28",
+          expectedEnd: "2026-10-01T23:59:59+10:00",
+          label: "28 Sep–1 Oct",
+          shippingPaid: false,
+        },
         packages: [
           {
             id: "mp-s1-p1",
@@ -587,6 +617,10 @@ const demoCustomer = hdCustomer;
 const cncMpOrder = {
   id: "452014820",
   date: "27 Sep 2026",
+  /**
+   * Canonical OMS order status — not a UI-invented mixed label.
+   * Unit breakdown in the progress line clarifies partial readiness.
+   */
   status: "Ready for collection",
   type: "Mixed",
   delivery: "Mixed",
@@ -733,6 +767,12 @@ const cncMpSellers = [
           "https://auspost.com.au/mypost/track/details/AU55201993",
         shippedAt: "2026-09-26T14:40:00+10:00",
         total: 49.0,
+        sla: {
+          expectedStart: "2026-09-28",
+          expectedEnd: "2026-10-01T23:59:59+10:00",
+          label: "28 Sep–1 Oct",
+          shippingPaid: false,
+        },
         packages: [
           {
             id: "mp-hd-p1",
@@ -814,7 +854,7 @@ export function isSelectableDemoOrder(id) {
   return Object.prototype.hasOwnProperty.call(demoOrders, id);
 }
 
-/** Demo focus: delayed + stale scans → Needs investigation (kmart-ship-3). */
+/** Demo focus: delayed + stale scans → Significantly delayed (kmart-ship-3). */
 export const DEMO_DELAYED_SHIPMENT_ID = "kmart-ship-3";
 
 /**
@@ -881,9 +921,10 @@ export const customerRecentCases = [
   {
     id: "123456",
     state: "Open",
-    topic: "Delivery",
+    topic: "Delivery / tracking",
     orderId: DEMO_ORDER_HD,
-    when: "Updated today",
+    when: "Updated today, 2:14 pm",
+    updatedAt: "2026-09-28T14:14:00+10:00",
     opened: "Opened 29 Sep",
     open: true,
     linkable: true,
@@ -894,6 +935,7 @@ export const customerRecentCases = [
     topic: "Missing item",
     orderId: "451988201",
     when: "Updated 2 days ago",
+    updatedAt: "2026-09-26T11:20:00+10:00",
     opened: "Opened 18 Sep",
     open: true,
     linkable: true,
@@ -904,6 +946,7 @@ export const customerRecentCases = [
     topic: "Missing item",
     orderId: "451988201",
     when: "Closed 20 Sep",
+    updatedAt: "2026-09-20T16:00:00+10:00",
     opened: "Opened 15 Sep",
     open: false,
     linkable: false,
@@ -914,6 +957,7 @@ export const customerRecentCases = [
     topic: "Refund",
     orderId: null,
     when: "Closed 12 Sep",
+    updatedAt: "2026-09-12T09:30:00+10:00",
     opened: "Opened 10 Sep",
     open: false,
     linkable: false,

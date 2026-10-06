@@ -112,7 +112,8 @@ export const SHIPPIT_STATUS_MAP = {
   },
   lost: {
     label: "Lost in transit",
-    explanation: "This parcel has been reported lost. Create a case for investigation.",
+    explanation:
+      "This parcel has been reported lost. Refund the affected shipment if eligible, or record follow-up on a case.",
     calculateDelay: false,
     kind: "exception",
     pathway: "lost",
